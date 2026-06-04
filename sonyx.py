@@ -222,6 +222,16 @@ def _piped_streams(video_id: str) -> list[dict]:
     return []
 
 
+def _soundcloud_search_fallback(query: str, n: int = 1) -> list[dict]:
+    """Ultimate fallback: search SoundCloud instead of YouTube."""
+    try:
+        print(f"[sonyx] Proxies failed, trying SoundCloud fallback for '{query}'")
+        return _ydl_extract(f"scsearch{n}:{query}", playlist=False)
+    except Exception as e:
+        print(f"[sonyx] SoundCloud fallback error: {e}")
+        return []
+
+
 def _piped_search(query: str, n: int = 1) -> list[dict]:
     """
     Search YouTube via Piped and return stream-ready dicts.
@@ -565,8 +575,8 @@ def _resolve_youtube(url: str) -> list[dict]:
             if meta.get("thumbnail_url"):
                 results[0].setdefault("thumbnail", meta["thumbnail_url"])
             return results
-        # Proxy search also failed — try yt-dlp ytsearch
-        results = _ydl_extract(f"ytsearch1:{query}", playlist=False)
+        # Proxy search also failed — try SoundCloud fallback, then yt-dlp ytsearch
+        results = _soundcloud_search_fallback(query, 1) or _ydl_extract(f"ytsearch1:{query}", playlist=False)
         if results:
             results[0]["_original_title"] = title
             return results
@@ -625,7 +635,7 @@ def _resolve_spotify(url: str) -> list[dict]:
                 artist = data["artists"][0]["name"]
                 title  = data["name"]
                 query  = f"{artist} {title}"
-                hits   = _piped_search(query) or _invidious_search(query) or _ydl_extract(f"ytsearch1:{query} audio", playlist=False)
+                hits   = _piped_search(query) or _invidious_search(query) or _soundcloud_search_fallback(query, 1) or _ydl_extract(f"ytsearch1:{query} audio", playlist=False)
                 if hits:
                     hits[0]["_original_title"] = f"{artist} — {title}"
                     results = hits
@@ -637,7 +647,7 @@ def _resolve_spotify(url: str) -> list[dict]:
                     artist = t["artists"][0]["name"]
                     title  = t["name"]
                     query  = f"{artist} {title}"
-                    hits   = _piped_search(query) or _invidious_search(query) or _ydl_extract(f"ytsearch1:{query} audio", playlist=False)
+                    hits   = _piped_search(query) or _invidious_search(query) or _soundcloud_search_fallback(query, 1) or _ydl_extract(f"ytsearch1:{query} audio", playlist=False)
                     if hits:
                         hits[0]["_original_title"] = f"{artist} — {title}"
                         results.extend(hits)
@@ -649,7 +659,7 @@ def _resolve_spotify(url: str) -> list[dict]:
                     artist = t["artists"][0]["name"]
                     title  = t["name"]
                     query  = f"{artist} {title}"
-                    hits   = _piped_search(query) or _invidious_search(query) or _ydl_extract(f"ytsearch1:{query} audio", playlist=False)
+                    hits   = _piped_search(query) or _invidious_search(query) or _soundcloud_search_fallback(query, 1) or _ydl_extract(f"ytsearch1:{query} audio", playlist=False)
                     if hits:
                         hits[0]["_original_title"] = f"{artist} — {title}"
                         results.extend(hits)
@@ -669,7 +679,7 @@ def _resolve_spotify(url: str) -> list[dict]:
                 query += " " + og_desc.group(1).split("·")[0].strip()
             if query:
                 q = query.strip()
-                results = _piped_search(q) or _invidious_search(q) or _ydl_extract(f"ytsearch1:{q} audio", playlist=False)
+                results = _piped_search(q) or _invidious_search(q) or _soundcloud_search_fallback(q, 1) or _ydl_extract(f"ytsearch1:{q} audio", playlist=False)
         except Exception as e:
             print(f"[sonyx] Spotify OG-title fallback error: {e}")
 
@@ -707,7 +717,7 @@ def _resolve_apple_music(url: str) -> list[dict]:
             song, artist = raw_title, ""
 
         query   = f"{song} {artist}".strip()
-        results = _piped_search(query) or _invidious_search(query) or _ydl_extract(f"ytsearch1:{query} audio", playlist=False)
+        results = _piped_search(query) or _invidious_search(query) or _soundcloud_search_fallback(query, 1) or _ydl_extract(f"ytsearch1:{query} audio", playlist=False)
         if results:
             results[0]["_original_title"] = f"{song} — {artist}" if artist else song
         return results
@@ -718,12 +728,16 @@ def _resolve_apple_music(url: str) -> list[dict]:
 
 
 def _resolve_text_search(query: str, n: int = 1) -> list[dict]:
-    """Search via proxies (no YouTube auth), fall back to yt-dlp."""
+    """Search via proxies (no YouTube auth), fall back to SoundCloud, then yt-dlp."""
     results = _piped_search(query, n) or _invidious_search(query, n)
     if results:
         return results
-    # Proxies all down — fall back to yt-dlp
-    print(f"[sonyx] All proxies failed for '{query}', falling back to yt-dlp")
+    # Proxies all down — fall back to SoundCloud search
+    results = _soundcloud_search_fallback(query, n)
+    if results:
+        return results
+    
+    print(f"[sonyx] All proxies + SoundCloud failed for '{query}', falling back to yt-dlp")
     try:
         return _ydl_extract(f"ytsearch{n}:{query}", playlist=False)
     except Exception:
