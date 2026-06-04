@@ -90,8 +90,9 @@ def build_ydl_opts(out_path: Path) -> dict:
         # Metadata embedding (optional but nice)
         "postprocessor_args": ["-id3v2_version", "3"],
         "writethumbnail": False,
-        "quiet": True,
-        "no_warnings": True,
+        "quiet": False,
+        "no_warnings": False,
+        "verbose": True,
     }
 
     # Dynamic cookies file creation from environment variable
@@ -385,6 +386,39 @@ async def on_ready():
     print(f"[ytaudio] Logged in as {bot.user} (ID: {bot.user.id})")
     print(f"[ytaudio] Prefix: '{PREFIX}'  |  Format: {AUDIO_FORMAT.upper()}  |  Quality: {AUDIO_QUALITY}")
     print(f"[ytaudio] Max duration: {format_duration(MAX_DURATION) if MAX_DURATION else 'unlimited'}")
+
+    # Check cookies environment variable on startup
+    cookies_env = os.environ.get("YOUTUBE_COOKIES") or os.environ.get("YT_COOKIES")
+    if cookies_env:
+        print(f"[ytaudio] Found YOUTUBE_COOKIES environment variable (length: {len(cookies_env)} characters)")
+        try:
+            lines = []
+            for line in cookies_env.strip().splitlines():
+                trimmed = line.strip()
+                if not trimmed:
+                    continue
+                if trimmed.startswith("#"):
+                    lines.append(trimmed)
+                    continue
+                # Split by tabs or spaces
+                parts = trimmed.split(None, 6)
+                if len(parts) == 7:
+                    lines.append("\t".join(parts))
+                else:
+                    lines.append(trimmed)
+            
+            # Ensure the Netscape header exists at the top
+            header = "# Netscape HTTP Cookie File"
+            if not any(l.startswith(header) for l in lines[:3]):
+                lines.insert(0, header)
+                
+            Path("cookies.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+            print("[ytaudio] Successfully wrote cookies.txt at startup!")
+        except Exception as e:
+            print(f"[ytaudio] Error writing cookies.txt at startup: {e}")
+    else:
+        print("[ytaudio] Warning: YOUTUBE_COOKIES or YT_COOKIES environment variable not found on startup.")
+
     print("-" * 50)
 
 
