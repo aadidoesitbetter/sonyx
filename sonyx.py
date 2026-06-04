@@ -28,6 +28,7 @@ Commands (prefix  + slash):
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import random
@@ -69,6 +70,21 @@ except ImportError:
     print("[sonyx] FFmpeg: static-ffmpeg not installed, using system ffmpeg")
 except Exception as e:
     print(f"[sonyx] FFmpeg: static-ffmpeg init failed ({e}), using system ffmpeg")
+
+# ── YouTube cookies from env var (base64-encoded Netscape cookie file) ────────
+# To set up: export your YouTube cookies as Netscape format, base64-encode them,
+# then add YOUTUBE_COOKIES_B64=<value> in your Railway environment variables.
+_yt_cookies_b64 = os.environ.get("YOUTUBE_COOKIES_B64", "").strip()
+if _yt_cookies_b64:
+    try:
+        _cookies_data = base64.b64decode(_yt_cookies_b64).decode("utf-8")
+        with open("cookies.txt", "w", encoding="utf-8") as _f:
+            _f.write(_cookies_data)
+        print("[sonyx] YouTube cookies: loaded from YOUTUBE_COOKIES_B64 env var")
+    except Exception as _e:
+        print(f"[sonyx] YouTube cookies: failed to decode YOUTUBE_COOKIES_B64 ({_e})")
+else:
+    print("[sonyx] YouTube cookies: not configured (optional — set YOUTUBE_COOKIES_B64 in Railway env)")
 
 
 # ── Optional: Spotify support via spotipy ─────────────────────────────────────
@@ -128,15 +144,112 @@ YDL_BASE = {
     "extract_flat": False,
     "skip_download": True,
     "noplaylist": True,
-    "cookiefile": "cookies.txt" if Path("cookies.txt").exists() else None,
+    "cookiefile": "cookies.txt",   # written on startup from YOUTUBE_COOKIES_B64 env var if set
     "source_address": "0.0.0.0",
-    # Use mobile API clients — avoids YouTube bot detection without cookies
     "extractor_args": {
         "youtube": {
             "player_client": ["ios", "android", "web"],
         }
     },
 }
+
+# ── Piped API — YouTube proxy that bypasses datacenter IP blocks ───────────────
+# Piped fetches from YouTube on its own servers, so Railway's blocked IP is
+# never exposed to YouTube's bot detection.
+PIPED_INSTANCES = [
+    "https://pipedapi.kavin.rocks",
+    "https://api.piped.projectsegfau.lt",
+    "https://piped-api.garudalinux.org",
+    "https://watchapi.whatever.social",
+    "https://api.piped.yt",
+]
+
+
+def _extract_yt_id(url: str) -> str | None:
+    """Extract the 11-char video ID from any YouTube URL format."""
+    m = re.search(r"(?:v=|youtu\.be/|/shorts/|/embed/)([a-zA-Z0-9_-]{11})", url)
+    return m.group(1) if m else None
+
+
+def _piped_streams(video_id: str) -> list[dict]:
+    """
+    Fetch audio stream URL for a video ID via Piped instances.
+    Tries multiple instances until one works.
+    """
+    for base in PIPED_INSTANCES:
+        try:
+            url = f"{base}/streams/{video_id}"
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+
+            if "error" in data or not data.get("audioStreams"):
+                continue
+
+            # Pick highest-bitrate audio stream
+            best = sorted(
+                data["audioStreams"],
+                key=lambda x: x.get("bitrate", 0),
+                reverse=True,
+            )[0]
+
+            stream_url = best.get("url", "")
+            if not stream_url:
+                continue
+
+            print(f"[sonyx] Piped ✅ {base} — {data.get('title', video_id)}")
+            return [{
+                "title":       data.get("title", "Unknown"),
+                "uploader":    data.get("uploader", "Unknown"),
+                "duration":    int(data.get("duration") or 0),
+                "thumbnail":   data.get("thumbnailUrl", ""),
+                "webpage_url": f"https://www.youtube.com/watch?v={video_id}",
+                "url":         stream_url,
+            }]
+        except Exception as e:
+            print(f"[sonyx] Piped {base} streams error: {e}")
+    return []
+
+
+def _piped_search(query: str, n: int = 1) -> list[dict]:
+    """
+    Search YouTube via Piped and return stream-ready dicts.
+    Falls back through multiple Piped instances.
+    """
+    for base in PIPED_INSTANCES:
+        try:
+            search_url = f"{base}/search?q={urllib.parse.quote(query)}&filter=videos"
+            req = urllib.request.Request(
+                search_url,
+                headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                items = json.loads(resp.read()).get("items", [])
+
+            if not items:
+                continue
+
+            results = []
+            for item in items:
+                if len(results) >= n:
+                    break
+                vid_path = item.get("url", "")          # e.g. "/watch?v=XXXX"
+                m = re.search(r"v=([a-zA-Z0-9_-]{11})", vid_path)
+                if not m:
+                    continue
+                video_id = m.group(1)
+                streams  = _piped_streams(video_id)
+                if streams:
+                    streams[0]["_original_title"] = item.get("title", streams[0]["title"])
+                    results.append(streams[0])
+
+            if results:
+                return results
+        except Exception as e:
+            print(f"[sonyx] Piped {base} search error: {e}")
+    return []
 
 # URL patterns
 _YT_RE = re.compile(
@@ -339,60 +452,73 @@ def _fetch_yt_oembed(url: str) -> dict | None:
 
 def _resolve_youtube(url: str) -> list[dict]:
     """
-    Metadata Bridge for YouTube:
-      1. oEmbed API → get title + author (no login required)
-      2. ytsearch1:"title author" → yt-dlp finds a fresh stream URL
-    This completely avoids the 'Sign in to confirm you're not a bot' error.
-    Playlists still use direct yt-dlp (oEmbed doesn't cover playlists).
+    YouTube resolution — three-layer approach:
+      1. Piped API (video ID → direct stream, no YouTube auth)
+      2. oEmbed → Piped search (title-based search via Piped)
+      3. yt-dlp fallback (last resort, may hit bot detection)
     """
     if _YT_PL.search(url):
-        # Playlists — direct yt-dlp extraction
         return _ydl_extract(url, playlist=True)
 
-    # Single video — metadata bridge
+    # Layer 1: direct Piped lookup by video ID (fastest, most reliable)
+    video_id = _extract_yt_id(url)
+    if video_id:
+        result = _piped_streams(video_id)
+        if result:
+            return result
+
+    # Layer 2: oEmbed → Piped search by title
     meta = _fetch_yt_oembed(url)
     if meta:
         title  = meta.get("title", "").strip()
         author = meta.get("author_name", "").strip()
         query  = f"{title} {author}".strip()
-        print(f"[sonyx] YouTube bridge → searching: '{query}'")
-        results = _ydl_extract(f"ytsearch1:{query}", playlist=False)
+        print(f"[sonyx] YouTube → Piped search: '{query}'")
+        results = _piped_search(query)
         if results:
-            # Preserve the original video title so embed shows correct name
             results[0]["_original_title"] = title
             results[0].setdefault("uploader", author)
             if meta.get("thumbnail_url"):
                 results[0].setdefault("thumbnail", meta["thumbnail_url"])
             return results
+        # Piped search also failed — try yt-dlp ytsearch
+        results = _ydl_extract(f"ytsearch1:{query}", playlist=False)
+        if results:
+            results[0]["_original_title"] = title
+            return results
 
-    # Fallback — direct yt-dlp (may hit bot detection but worth trying)
-    print(f"[sonyx] YouTube oEmbed failed, trying direct extraction…")
+    # Layer 3: direct yt-dlp (likely bot-detected on Railway, but try anyway)
+    print("[sonyx] All YouTube bridges failed, trying direct yt-dlp…")
     return _ydl_extract(url, playlist=False)
 
 
 def _resolve_soundcloud(url: str) -> list[dict]:
     """
-    SoundCloud metadata bridge: extract title via yt-dlp metadata-only,
-    then re-search to get a stable stream URL.
+    SoundCloud: extract title via yt-dlp metadata-only mode, then search
+    via Piped (YouTube) so we avoid Railway IP issues.
     """
     try:
         opts = dict(YDL_BASE)
-        opts["extract_flat"] = True   # metadata only, no stream resolve
+        opts["extract_flat"] = True
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
         if info:
             title  = info.get("title", "").strip()
             author = info.get("uploader") or info.get("channel") or ""
             if title:
-                query   = f"{title} {author}".strip()
-                results = _ydl_extract(f"ytsearch1:{query}", playlist=False)
+                query = f"{title} {author}".strip()
+                results = _piped_search(query)
                 if results:
                     results[0]["_original_title"] = title
                     results[0].setdefault("uploader", author)
                     return results
+                # Piped failed — try yt-dlp ytsearch
+                results = _ydl_extract(f"ytsearch1:{query}", playlist=False)
+                if results:
+                    results[0]["_original_title"] = title
+                    return results
     except Exception as e:
         print(f"[sonyx] SoundCloud bridge error: {e}")
-    # Fallback direct
     return _ydl_extract(url)
 
 
@@ -411,12 +537,14 @@ def _resolve_spotify(url: str) -> list[dict]:
     if SPOTIFY_ENABLED and _sp:
         try:
             if kind == "track":
-                data    = _sp.track(sp_id)
-                artist  = data["artists"][0]["name"]
-                title   = data["name"]
-                results = _ydl_extract(f"ytsearch1:{artist} {title} audio", playlist=False)
-                if results:
-                    results[0]["_original_title"] = f"{artist} — {title}"
+                data   = _sp.track(sp_id)
+                artist = data["artists"][0]["name"]
+                title  = data["name"]
+                query  = f"{artist} {title}"
+                hits   = _piped_search(query) or _ydl_extract(f"ytsearch1:{query} audio", playlist=False)
+                if hits:
+                    hits[0]["_original_title"] = f"{artist} — {title}"
+                    results = hits
 
             elif kind == "album":
                 data   = _sp.album(sp_id)
@@ -424,18 +552,20 @@ def _resolve_spotify(url: str) -> list[dict]:
                 for t in tracks:
                     artist = t["artists"][0]["name"]
                     title  = t["name"]
-                    hits   = _ydl_extract(f"ytsearch1:{artist} {title} audio", playlist=False)
+                    query  = f"{artist} {title}"
+                    hits   = _piped_search(query) or _ydl_extract(f"ytsearch1:{query} audio", playlist=False)
                     if hits:
                         hits[0]["_original_title"] = f"{artist} — {title}"
                         results.extend(hits)
 
             elif kind == "playlist":
-                data   = _sp.playlist_tracks(sp_id, limit=MAX_PLAYLIST_TRACKS)
-                items  = [i["track"] for i in data["items"] if i.get("track")]
+                data  = _sp.playlist_tracks(sp_id, limit=MAX_PLAYLIST_TRACKS)
+                items = [i["track"] for i in data["items"] if i.get("track")]
                 for t in items:
                     artist = t["artists"][0]["name"]
                     title  = t["name"]
-                    hits   = _ydl_extract(f"ytsearch1:{artist} {title} audio", playlist=False)
+                    query  = f"{artist} {title}"
+                    hits   = _piped_search(query) or _ydl_extract(f"ytsearch1:{query} audio", playlist=False)
                     if hits:
                         hits[0]["_original_title"] = f"{artist} — {title}"
                         results.extend(hits)
@@ -445,9 +575,7 @@ def _resolve_spotify(url: str) -> list[dict]:
     else:
         # Graceful fallback: scrape Open Graph title from the Spotify page URL
         try:
-            req = urllib.request.Request(
-                url, headers={"User-Agent": "Mozilla/5.0"}
-            )
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=8) as resp:
                 html = resp.read(32768).decode("utf-8", errors="ignore")
             og_title = re.search(r'<meta property="og:title" content="([^"]+)"', html)
@@ -456,7 +584,8 @@ def _resolve_spotify(url: str) -> list[dict]:
             if og_desc:
                 query += " " + og_desc.group(1).split("·")[0].strip()
             if query:
-                results = _ydl_extract(f"ytsearch1:{query.strip()} audio", playlist=False)
+                q = query.strip()
+                results = _piped_search(q) or _ydl_extract(f"ytsearch1:{q} audio", playlist=False)
         except Exception as e:
             print(f"[sonyx] Spotify OG-title fallback error: {e}")
 
@@ -494,7 +623,7 @@ def _resolve_apple_music(url: str) -> list[dict]:
             song, artist = raw_title, ""
 
         query   = f"{song} {artist}".strip()
-        results = _ydl_extract(f"ytsearch1:{query} audio", playlist=False)
+        results = _piped_search(query) or _ydl_extract(f"ytsearch1:{query} audio", playlist=False)
         if results:
             results[0]["_original_title"] = f"{song} — {artist}" if artist else song
         return results
@@ -505,7 +634,16 @@ def _resolve_apple_music(url: str) -> list[dict]:
 
 
 def _resolve_text_search(query: str, n: int = 1) -> list[dict]:
-    return _ydl_extract(f"ytsearch{n}:{query}", playlist=False)
+    """Search via Piped (no YouTube auth), fall back to yt-dlp."""
+    results = _piped_search(query, n)
+    if results:
+        return results
+    # Piped all instances down — fall back to yt-dlp
+    print(f"[sonyx] All Piped instances failed for '{query}', falling back to yt-dlp")
+    try:
+        return _ydl_extract(f"ytsearch{n}:{query}", playlist=False)
+    except Exception:
+        return []
 
 
 async def resolve_input(
