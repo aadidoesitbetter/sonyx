@@ -75,25 +75,40 @@ def is_valid_yt_url(url: str) -> bool:
 async def download_audio(url: str, job_dir: Path) -> dict:
     """Run pytubefix in a thread pool so the bot stays responsive."""
     def _blocking_download():
-        # Using WEB client which automatically generates po_token if needed
-        yt = YouTube(url, client='WEB')
+        clients_to_try = ['ANDROID_MUSIC', 'WEB_CREATOR', 'IOS', 'ANDROID', 'WEB']
+        last_exception = None
         
-        # We need the highest quality audio stream
-        audio_stream = yt.streams.get_audio_only()
-        if not audio_stream:
-            raise Exception("No audio stream found for this video.")
-        
-        # Download (pytubefix usually downloads as .m4a or .mp4 for audio-only)
-        out_file = audio_stream.download(output_path=str(job_dir))
-        
-        # Return info dict similar to what we used before
-        return {
-            "title": yt.title,
-            "uploader": yt.author,
-            "duration": yt.length,
-            "webpage_url": yt.watch_url,
-            "thumbnail": yt.thumbnail_url,
-        }
+        for client_name in clients_to_try:
+            try:
+                # Try different clients to bypass datacenter IP blocks
+                yt = YouTube(url, client=client_name)
+                
+                # We need the highest quality audio stream
+                audio_stream = yt.streams.get_audio_only()
+                if not audio_stream:
+                    continue # Try next client if no stream found
+                
+                # Download
+                out_file = audio_stream.download(output_path=str(job_dir))
+                
+                # Return info dict
+                return {
+                    "title": yt.title,
+                    "uploader": yt.author,
+                    "duration": yt.length,
+                    "webpage_url": yt.watch_url,
+                    "thumbnail": yt.thumbnail_url,
+                }
+            except Exception as e:
+                last_exception = e
+                # Fall through and try next client
+                continue
+                
+        # If we exhausted all clients and still failed, raise the last error
+        if last_exception:
+            raise last_exception
+        else:
+            raise Exception("No audio stream found for this video across all clients.")
 
     loop = asyncio.get_running_loop()
     info = await loop.run_in_executor(None, _blocking_download)
@@ -194,7 +209,13 @@ async def process_request(
         # ── Probe duration first (no download) ────────────────────────────
         if MAX_DURATION > 0:
             def _probe():
-                return YouTube(url, client='WEB').length
+                clients_to_try = ['ANDROID_MUSIC', 'WEB_CREATOR', 'IOS', 'ANDROID', 'WEB']
+                for client_name in clients_to_try:
+                    try:
+                        return YouTube(url, client=client_name).length
+                    except Exception:
+                        pass
+                return 0 # Fallback to 0 if all fail (allows download to attempt)
 
             loop = asyncio.get_running_loop()
             duration = await loop.run_in_executor(None, _probe)
