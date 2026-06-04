@@ -120,6 +120,8 @@ def build_ydl_opts(out_path: Path) -> dict:
         "quiet": False,
         "no_warnings": False,
         "verbose": True,
+        # Bypass YouTube bot detection by masking as a mobile client
+        "extractor_args": {"youtube": {"player_client": ["ios", "android"]}}
     }
 
     cookies_path = Path("cookies.txt")
