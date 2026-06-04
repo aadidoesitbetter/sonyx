@@ -60,6 +60,17 @@ except ImportError:
 if not DISCORD_TOKEN or DISCORD_TOKEN == "YOUR_DISCORD_BOT_TOKEN_HERE":
     raise SystemExit("❌  DISCORD_TOKEN is not set!")
 
+# ── Ensure ffmpeg/ffprobe are in PATH (bundled via static-ffmpeg pip package) ──
+try:
+    import static_ffmpeg
+    static_ffmpeg.add_paths()   # injects bundled ffmpeg + ffprobe into os.environ["PATH"]
+    print("[sonyx] FFmpeg: injected from static-ffmpeg package")
+except ImportError:
+    print("[sonyx] FFmpeg: static-ffmpeg not installed, using system ffmpeg")
+except Exception as e:
+    print(f"[sonyx] FFmpeg: static-ffmpeg init failed ({e}), using system ffmpeg")
+
+
 # ── Optional: Spotify support via spotipy ─────────────────────────────────────
 try:
     import spotipy
