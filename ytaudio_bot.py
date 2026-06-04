@@ -66,8 +66,42 @@ DOWNLOAD_DIR.mkdir(exist_ok=True)
 
 DISCORD_MAX_BYTES = 25 * 1024 * 1024   # 25 MB free-tier limit
 
-# ── No longer using cookies.txt as we use pytubefix ─────────────────────────────
-# pytubefix bypasses basic bot checks automatically.
+# ── Dynamic cookies file creation from environment variable ───────────────────
+def setup_cookies():
+    cookies_env = os.environ.get("YOUTUBE_COOKIES") or os.environ.get("YT_COOKIES")
+    cookies_path = Path("cookies.txt")
+    if cookies_env:
+        print(f"[ytaudio] Found YOUTUBE_COOKIES environment variable (length: {len(cookies_env)} characters)")
+        try:
+            lines = []
+            for line in cookies_env.strip().splitlines():
+                trimmed = line.strip()
+                if not trimmed:
+                    continue
+                if trimmed.startswith("#"):
+                    lines.append(trimmed)
+                    continue
+                parts = trimmed.split(None, 6)
+                if len(parts) == 7:
+                    lines.append("\t".join(parts))
+                else:
+                    lines.append(trimmed)
+            
+            header = "# Netscape HTTP Cookie File"
+            if not any(l.startswith(header) for l in lines[:3]):
+                lines.insert(0, header)
+                
+            cookies_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            print("[ytaudio] Successfully wrote cookies.txt from environment variable!")
+        except Exception as e:
+            print(f"[ytaudio] Error writing cookies.txt from environment variable: {e}")
+    else:
+        if cookies_path.exists():
+            print(f"[ytaudio] Using existing local cookies.txt (size: {cookies_path.stat().st_size} bytes)")
+        else:
+            print("[ytaudio] Warning: YOUTUBE_COOKIES or YT_COOKIES environment variable not found on startup.")
+
+setup_cookies()
 
 def is_valid_yt_url(url: str) -> bool:
     return bool(YT_URL_PATTERN.search(url))
@@ -278,6 +312,11 @@ def download_via_ytdlp(url: str, job_dir: Path) -> dict:
         'no_warnings': True,
     }
     
+    cookies_path = Path("cookies.txt")
+    if cookies_path.exists():
+        ydl_opts['cookiefile'] = str(cookies_path)
+        print("[ytaudio] Using cookies.txt for yt-dlp fallback download")
+
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info_dict = ydl.extract_info(url, download=True)
         
