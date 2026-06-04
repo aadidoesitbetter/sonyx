@@ -28,6 +28,7 @@ Commands (prefix  + slash):
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import random
 import re
@@ -300,12 +301,81 @@ def _ydl_extract(query: str, playlist: bool = False) -> list[dict]:
     return [info]
 
 
+def _fetch_yt_oembed(url: str) -> dict | None:
+    """
+    Hit YouTube's unauthenticated oEmbed endpoint to get title + author.
+    Returns dict with 'title', 'author_name', 'thumbnail_url' or None on failure.
+    """
+    try:
+        encoded = urllib.parse.quote(url, safe="")
+        oembed_url = f"https://www.youtube.com/oembed?url={encoded}&format=json"
+        req = urllib.request.Request(
+            oembed_url,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; Sonyx/1.0)"},
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            return json.loads(resp.read())
+    except Exception as e:
+        print(f"[sonyx] oEmbed failed: {e}")
+        return None
+
+
 def _resolve_youtube(url: str) -> list[dict]:
-    is_playlist = bool(_YT_PL.search(url))
-    return _ydl_extract(url, playlist=is_playlist)
+    """
+    Metadata Bridge for YouTube:
+      1. oEmbed API → get title + author (no login required)
+      2. ytsearch1:"title author" → yt-dlp finds a fresh stream URL
+    This completely avoids the 'Sign in to confirm you're not a bot' error.
+    Playlists still use direct yt-dlp (oEmbed doesn't cover playlists).
+    """
+    if _YT_PL.search(url):
+        # Playlists — direct yt-dlp extraction
+        return _ydl_extract(url, playlist=True)
+
+    # Single video — metadata bridge
+    meta = _fetch_yt_oembed(url)
+    if meta:
+        title  = meta.get("title", "").strip()
+        author = meta.get("author_name", "").strip()
+        query  = f"{title} {author}".strip()
+        print(f"[sonyx] YouTube bridge → searching: '{query}'")
+        results = _ydl_extract(f"ytsearch1:{query}", playlist=False)
+        if results:
+            # Preserve the original video title so embed shows correct name
+            results[0]["_original_title"] = title
+            results[0].setdefault("uploader", author)
+            if meta.get("thumbnail_url"):
+                results[0].setdefault("thumbnail", meta["thumbnail_url"])
+            return results
+
+    # Fallback — direct yt-dlp (may hit bot detection but worth trying)
+    print(f"[sonyx] YouTube oEmbed failed, trying direct extraction…")
+    return _ydl_extract(url, playlist=False)
 
 
 def _resolve_soundcloud(url: str) -> list[dict]:
+    """
+    SoundCloud metadata bridge: extract title via yt-dlp metadata-only,
+    then re-search to get a stable stream URL.
+    """
+    try:
+        opts = dict(YDL_BASE)
+        opts["extract_flat"] = True   # metadata only, no stream resolve
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+        if info:
+            title  = info.get("title", "").strip()
+            author = info.get("uploader") or info.get("channel") or ""
+            if title:
+                query   = f"{title} {author}".strip()
+                results = _ydl_extract(f"ytsearch1:{query}", playlist=False)
+                if results:
+                    results[0]["_original_title"] = title
+                    results[0].setdefault("uploader", author)
+                    return results
+    except Exception as e:
+        print(f"[sonyx] SoundCloud bridge error: {e}")
+    # Fallback direct
     return _ydl_extract(url)
 
 
