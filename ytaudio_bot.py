@@ -243,6 +243,11 @@ def download_via_cobalt(url: str, job_dir: Path, req_format: str = AUDIO_FORMAT)
                             break
                         out_file.write(chunk)
 
+            if not out_path.exists() or out_path.stat().st_size == 0:
+                if out_path.exists():
+                    out_path.unlink(missing_ok=True)
+                raise Exception("Downloaded file is empty (0 bytes)")
+
             # 2. Get exact duration from the downloaded file using mutagen
             duration = probe_duration_with_mutagen(out_path)
 
@@ -490,8 +495,8 @@ async def process_request(
         info = await download_audio(url, job_dir, fmt)
         audio_file = find_output_file(job_dir, fmt)
 
-        if audio_file is None or not audio_file.exists():
-            await reply("❌  Download succeeded but the audio file couldn't be located. Check that `ffmpeg` is installed.", ephemeral=True)
+        if audio_file is None or not audio_file.exists() or audio_file.stat().st_size == 0:
+            await reply("❌  Download succeeded but the audio file is empty (0 bytes) or couldn't be located. Check that `ffmpeg` is installed.", ephemeral=True)
             return
 
         file_size = audio_file.stat().st_size
