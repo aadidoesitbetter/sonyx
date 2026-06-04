@@ -72,8 +72,150 @@ def is_valid_yt_url(url: str) -> bool:
     return bool(YT_URL_PATTERN.search(url))
 
 
+def extract_video_id(url: str) -> str | None:
+    """Extract 11-character YouTube video ID from URL."""
+    patterns = [
+        r"v=([\w\-]{11})",
+        r"shorts/([\w\-]{11})",
+        r"youtu\.be/([\w\-]{11})",
+        r"embed/([\w\-]{11})",
+        r"v/([\w\-]{11})"
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+    return None
+
+
+def probe_duration_with_ffprobe(file_path: Path) -> int:
+    """Extract audio duration in seconds using ffprobe."""
+    import subprocess
+    try:
+        cmd = [
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", str(file_path)
+        ]
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+        return int(float(result.stdout.strip()))
+    except Exception as e:
+        print(f"[ytaudio] ffprobe failed to get duration: {e}")
+        return 0
+
+
+def download_via_cobalt(url: str, job_dir: Path) -> dict:
+    """Fallback audio download via Cobalt API instances."""
+    import json
+    import urllib.request
+    import urllib.error
+
+    custom_instance = os.environ.get("COBALT_API_URL")
+    instances = []
+    if custom_instance:
+        instances.append(custom_instance.rstrip('/'))
+
+    default_instances = [
+        "https://cobaltapi.kittycat.boo",
+        "https://fox.kittycat.boo",
+        "https://dog.kittycat.boo",
+        "https://api.cobalt.liubquanti.click",
+        "https://api.cobalt.blackcat.sweeux.org",
+        "https://cobaltapi.cjs.nz",
+    ]
+    for inst in default_instances:
+        if inst not in instances:
+            instances.append(inst)
+
+    last_err = None
+    for instance in instances:
+        try:
+            print(f"[ytaudio] Trying Cobalt instance: {instance}")
+            payload = {
+                "url": url,
+                "downloadMode": "audio",
+                "audioFormat": AUDIO_FORMAT,
+                "audioBitrate": "320"
+            }
+            # v10+ Cobalt uses root path POST /
+            api_url = f"{instance}/"
+            
+            req = urllib.request.Request(
+                api_url,
+                data=json.dumps(payload).encode('utf-8'),
+                headers={
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                },
+                method='POST'
+            )
+
+            with urllib.request.urlopen(req, timeout=20) as response:
+                res_data = json.loads(response.read().decode('utf-8'))
+
+            status = res_data.get("status")
+            if status not in ("tunnel", "redirect"):
+                error_msg = res_data.get("error", {}).get("code") or res_data.get("error") or "Unknown status"
+                print(f"[ytaudio] Cobalt instance {instance} returned status={status}, error={error_msg}")
+                raise Exception(f"Cobalt error: {error_msg}")
+
+            download_url = res_data.get("url")
+            if not download_url:
+                raise Exception("No download URL returned by Cobalt API.")
+
+            filename = res_data.get("filename") or f"audio.{AUDIO_FORMAT}"
+            safe_filename = "".join(c for c in filename if c.isalnum() or c in "._- ")
+            if not safe_filename:
+                safe_filename = f"audio.{AUDIO_FORMAT}"
+
+            out_path = job_dir / safe_filename
+            print(f"[ytaudio] Downloading file from Cobalt: {download_url} -> {out_path}")
+
+            req_get = urllib.request.Request(
+                download_url,
+                headers={
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                }
+            )
+            with urllib.request.urlopen(req_get, timeout=60) as download_res:
+                with open(out_path, 'wb') as out_file:
+                    while True:
+                        chunk = download_res.read(64 * 1024)
+                        if not chunk:
+                            break
+                        out_file.write(chunk)
+
+            # Gather metadata best effort
+            video_id = extract_video_id(url)
+            thumbnail_url = f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg" if video_id else ""
+            duration = probe_duration_with_ffprobe(out_path)
+
+            title = filename
+            if title.lower().endswith(f".{AUDIO_FORMAT}"):
+                title = title[:-len(AUDIO_FORMAT)-1]
+            elif '.' in title:
+                title = title.rsplit('.', 1)[0]
+
+            return {
+                "title": title,
+                "uploader": "YouTube (via Cobalt)",
+                "duration": duration,
+                "webpage_url": url,
+                "thumbnail": thumbnail_url,
+            }
+        except Exception as e:
+            print(f"[ytaudio] Cobalt instance {instance} failed: {e}")
+            last_err = e
+            continue
+
+    if last_err:
+        raise last_err
+    else:
+        raise Exception("All Cobalt API fallback instances failed.")
+
+
 async def download_audio(url: str, job_dir: Path) -> dict:
-    """Run pytubefix in a thread pool so the bot stays responsive."""
+    """Run pytubefix in a thread pool so the bot stays responsive. Fallback to Cobalt if blocked."""
     def _blocking_download():
         # WEB with po_token (uses Node.js on Railway) is most reliable
         clients_to_try = [
@@ -119,8 +261,13 @@ async def download_audio(url: str, job_dir: Path) -> dict:
             raise Exception("No audio stream found for this video across all clients.")
 
     loop = asyncio.get_running_loop()
-    info = await loop.run_in_executor(None, _blocking_download)
-    return info
+    try:
+        info = await loop.run_in_executor(None, _blocking_download)
+        return info
+    except Exception as e:
+        print(f"[ytaudio] pytubefix download failed: {e}. Attempting Cobalt API fallback...")
+        info = await loop.run_in_executor(None, lambda: download_via_cobalt(url, job_dir))
+        return info
 
 
 def find_output_file(job_dir: Path) -> Path | None:
