@@ -1,17 +1,14 @@
 # ============================================================
 #  config.py  —  Bot credentials & settings
-#  Fill in your values, then run:  python bot.py
+#  Set DISCORD_TOKEN as an environment variable (Railway dashboard or .env locally)
 # ============================================================
 
 import os
-os.environ['PATH'] += r';C:\Users\aadi\Downloads\ffmpeg-8.1.1-essentials_build\bin'  # Change this to your actual path
+from dotenv import load_dotenv
+
+load_dotenv()  # loads .env when running locally; no-op in production
 
 # ── Discord ──────────────────────────────────────────────────
-
-import os
-from dotenv import load_dotenv
-load_dotenv()
-
 DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN")
 
 
