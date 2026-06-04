@@ -164,6 +164,15 @@ PIPED_INSTANCES = [
     "https://api.piped.yt",
 ]
 
+# ── Invidious API — Backup YouTube proxy ───────────────────────────────────────
+INVIDIOUS_INSTANCES = [
+    "https://invidious.jing.rocks",
+    "https://invidious.nerdvpn.de",
+    "https://inv.tux.pizza",
+    "https://invidious.fdn.fr",
+    "https://invidious.perennialte.ch",
+]
+
 
 def _extract_yt_id(url: str) -> str | None:
     """Extract the 11-char video ID from any YouTube URL format."""
@@ -249,6 +258,81 @@ def _piped_search(query: str, n: int = 1) -> list[dict]:
                 return results
         except Exception as e:
             print(f"[sonyx] Piped {base} search error: {e}")
+    return []
+
+
+def _invidious_streams(video_id: str) -> list[dict]:
+    """Fetch audio stream URL via Invidious instances."""
+    for base in INVIDIOUS_INSTANCES:
+        try:
+            url = f"{base}/api/v1/videos/{video_id}"
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+
+            formats = data.get("adaptiveFormats", [])
+            audio_formats = [f for f in formats if f.get("type", "").startswith("audio/")]
+            if not audio_formats:
+                continue
+
+            # Pick highest-bitrate audio stream
+            best = sorted(
+                audio_formats,
+                key=lambda x: int(x.get("bitrate", 0)),
+                reverse=True,
+            )[0]
+
+            stream_url = best.get("url", "")
+            if not stream_url:
+                continue
+
+            print(f"[sonyx] Invidious ✅ {base} — {data.get('title', video_id)}")
+            return [{
+                "title":       data.get("title", "Unknown"),
+                "uploader":    data.get("author", "Unknown"),
+                "duration":    int(data.get("lengthSeconds") or 0),
+                "thumbnail":   data.get("videoThumbnails", [{}])[0].get("url", ""),
+                "webpage_url": f"https://www.youtube.com/watch?v={video_id}",
+                "url":         stream_url,
+            }]
+        except Exception as e:
+            print(f"[sonyx] Invidious {base} streams error: {e}")
+    return []
+
+
+def _invidious_search(query: str, n: int = 1) -> list[dict]:
+    """Search YouTube via Invidious."""
+    for base in INVIDIOUS_INSTANCES:
+        try:
+            search_url = f"{base}/api/v1/search?q={urllib.parse.quote(query)}&type=video"
+            req = urllib.request.Request(
+                search_url,
+                headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                items = json.loads(resp.read())
+
+            if not items:
+                continue
+
+            results = []
+            for item in items:
+                if len(results) >= n:
+                    break
+                video_id = item.get("videoId")
+                if not video_id:
+                    continue
+                streams = _invidious_streams(video_id)
+                if streams:
+                    streams[0]["_original_title"] = item.get("title", streams[0]["title"])
+                    results.append(streams[0])
+
+            if results:
+                return results
+        except Exception as e:
+            print(f"[sonyx] Invidious {base} search error: {e}")
     return []
 
 # URL patterns
@@ -460,28 +544,28 @@ def _resolve_youtube(url: str) -> list[dict]:
     if _YT_PL.search(url):
         return _ydl_extract(url, playlist=True)
 
-    # Layer 1: direct Piped lookup by video ID (fastest, most reliable)
+    # Layer 1: direct proxy lookup by video ID (fastest, most reliable)
     video_id = _extract_yt_id(url)
     if video_id:
-        result = _piped_streams(video_id)
+        result = _piped_streams(video_id) or _invidious_streams(video_id)
         if result:
             return result
 
-    # Layer 2: oEmbed → Piped search by title
+    # Layer 2: oEmbed → proxy search by title
     meta = _fetch_yt_oembed(url)
     if meta:
         title  = meta.get("title", "").strip()
         author = meta.get("author_name", "").strip()
         query  = f"{title} {author}".strip()
-        print(f"[sonyx] YouTube → Piped search: '{query}'")
-        results = _piped_search(query)
+        print(f"[sonyx] YouTube → Proxy search: '{query}'")
+        results = _piped_search(query) or _invidious_search(query)
         if results:
             results[0]["_original_title"] = title
             results[0].setdefault("uploader", author)
             if meta.get("thumbnail_url"):
                 results[0].setdefault("thumbnail", meta["thumbnail_url"])
             return results
-        # Piped search also failed — try yt-dlp ytsearch
+        # Proxy search also failed — try yt-dlp ytsearch
         results = _ydl_extract(f"ytsearch1:{query}", playlist=False)
         if results:
             results[0]["_original_title"] = title
@@ -495,7 +579,7 @@ def _resolve_youtube(url: str) -> list[dict]:
 def _resolve_soundcloud(url: str) -> list[dict]:
     """
     SoundCloud: extract title via yt-dlp metadata-only mode, then search
-    via Piped (YouTube) so we avoid Railway IP issues.
+    via proxies (Piped/Invidious) so we avoid Railway IP issues.
     """
     try:
         opts = dict(YDL_BASE)
@@ -507,7 +591,7 @@ def _resolve_soundcloud(url: str) -> list[dict]:
             author = info.get("uploader") or info.get("channel") or ""
             if title:
                 query = f"{title} {author}".strip()
-                results = _piped_search(query)
+                results = _piped_search(query) or _invidious_search(query)
                 if results:
                     results[0]["_original_title"] = title
                     results[0].setdefault("uploader", author)
@@ -541,7 +625,7 @@ def _resolve_spotify(url: str) -> list[dict]:
                 artist = data["artists"][0]["name"]
                 title  = data["name"]
                 query  = f"{artist} {title}"
-                hits   = _piped_search(query) or _ydl_extract(f"ytsearch1:{query} audio", playlist=False)
+                hits   = _piped_search(query) or _invidious_search(query) or _ydl_extract(f"ytsearch1:{query} audio", playlist=False)
                 if hits:
                     hits[0]["_original_title"] = f"{artist} — {title}"
                     results = hits
@@ -553,7 +637,7 @@ def _resolve_spotify(url: str) -> list[dict]:
                     artist = t["artists"][0]["name"]
                     title  = t["name"]
                     query  = f"{artist} {title}"
-                    hits   = _piped_search(query) or _ydl_extract(f"ytsearch1:{query} audio", playlist=False)
+                    hits   = _piped_search(query) or _invidious_search(query) or _ydl_extract(f"ytsearch1:{query} audio", playlist=False)
                     if hits:
                         hits[0]["_original_title"] = f"{artist} — {title}"
                         results.extend(hits)
@@ -565,7 +649,7 @@ def _resolve_spotify(url: str) -> list[dict]:
                     artist = t["artists"][0]["name"]
                     title  = t["name"]
                     query  = f"{artist} {title}"
-                    hits   = _piped_search(query) or _ydl_extract(f"ytsearch1:{query} audio", playlist=False)
+                    hits   = _piped_search(query) or _invidious_search(query) or _ydl_extract(f"ytsearch1:{query} audio", playlist=False)
                     if hits:
                         hits[0]["_original_title"] = f"{artist} — {title}"
                         results.extend(hits)
@@ -585,7 +669,7 @@ def _resolve_spotify(url: str) -> list[dict]:
                 query += " " + og_desc.group(1).split("·")[0].strip()
             if query:
                 q = query.strip()
-                results = _piped_search(q) or _ydl_extract(f"ytsearch1:{q} audio", playlist=False)
+                results = _piped_search(q) or _invidious_search(q) or _ydl_extract(f"ytsearch1:{q} audio", playlist=False)
         except Exception as e:
             print(f"[sonyx] Spotify OG-title fallback error: {e}")
 
@@ -623,7 +707,7 @@ def _resolve_apple_music(url: str) -> list[dict]:
             song, artist = raw_title, ""
 
         query   = f"{song} {artist}".strip()
-        results = _piped_search(query) or _ydl_extract(f"ytsearch1:{query} audio", playlist=False)
+        results = _piped_search(query) or _invidious_search(query) or _ydl_extract(f"ytsearch1:{query} audio", playlist=False)
         if results:
             results[0]["_original_title"] = f"{song} — {artist}" if artist else song
         return results
@@ -634,12 +718,12 @@ def _resolve_apple_music(url: str) -> list[dict]:
 
 
 def _resolve_text_search(query: str, n: int = 1) -> list[dict]:
-    """Search via Piped (no YouTube auth), fall back to yt-dlp."""
-    results = _piped_search(query, n)
+    """Search via proxies (no YouTube auth), fall back to yt-dlp."""
+    results = _piped_search(query, n) or _invidious_search(query, n)
     if results:
         return results
-    # Piped all instances down — fall back to yt-dlp
-    print(f"[sonyx] All Piped instances failed for '{query}', falling back to yt-dlp")
+    # Proxies all down — fall back to yt-dlp
+    print(f"[sonyx] All proxies failed for '{query}', falling back to yt-dlp")
     try:
         return _ydl_extract(f"ytsearch{n}:{query}", playlist=False)
     except Exception:
