@@ -80,7 +80,7 @@ def build_ydl_opts(out_path: Path) -> dict:
         }
     ]
 
-    return {
+    opts = {
         # Best audio stream available
         "format": "bestaudio/best",
         "outtmpl": str(out_path / "%(title)s.%(ext)s"),
@@ -93,6 +93,24 @@ def build_ydl_opts(out_path: Path) -> dict:
         "quiet": True,
         "no_warnings": True,
     }
+
+    # Dynamic cookies file creation from environment variable
+    cookies_env = os.environ.get("YOUTUBE_COOKIES") or os.environ.get("YT_COOKIES")
+    cookies_path = Path("cookies.txt")
+    if cookies_env:
+        try:
+            cookies_path.write_text(cookies_env.strip(), encoding="utf-8")
+            print("[ytaudio] Successfully wrote cookies from environment variable to cookies.txt")
+        except Exception as e:
+            print(f"[ytaudio] Failed to write cookies from environment variable: {e}")
+
+    if cookies_path.exists():
+        opts["cookiefile"] = str(cookies_path)
+        print("[ytaudio] Using cookies.txt for yt-dlp requests")
+    else:
+        print("[ytaudio] Warning: No cookies.txt found or configured. YouTube requests may get blocked with bot detection.")
+
+    return opts
 
 
 async def download_audio(url: str, job_dir: Path) -> tuple[Path, dict]:
