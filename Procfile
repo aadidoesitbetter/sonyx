@@ -1,1 +1,1 @@
-worker: python ytaudio_bot.py
+worker: python sonyx.py
