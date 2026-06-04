@@ -43,8 +43,8 @@ except ImportError:
     raise SystemExit("❌  config.py not found. Copy config.py next to this file and fill in your values.")
 
 # ── Sanity-check token ────────────────────────────────────────────────────────
-if DISCORD_TOKEN == "YOUR_DISCORD_BOT_TOKEN_HERE":
-    raise SystemExit("❌  Please set your DISCORD_TOKEN in config.py before running the bot.")
+if not DISCORD_TOKEN or DISCORD_TOKEN == "YOUR_DISCORD_BOT_TOKEN_HERE":
+    raise SystemExit("❌  DISCORD_TOKEN is not set! Please configure it in your environment variables or Railway Dashboard.")
 
 # ── Discord setup ─────────────────────────────────────────────────────────────
 intents = discord.Intents.default()
