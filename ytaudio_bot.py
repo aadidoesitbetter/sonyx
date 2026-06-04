@@ -99,8 +99,28 @@ def build_ydl_opts(out_path: Path) -> dict:
     cookies_path = Path("cookies.txt")
     if cookies_env:
         try:
-            cookies_path.write_text(cookies_env.strip(), encoding="utf-8")
-            print("[ytaudio] Successfully wrote cookies from environment variable to cookies.txt")
+            lines = []
+            for line in cookies_env.strip().splitlines():
+                trimmed = line.strip()
+                if not trimmed:
+                    continue
+                if trimmed.startswith("#"):
+                    lines.append(trimmed)
+                    continue
+                # Split by tabs or spaces
+                parts = trimmed.split(None, 6)
+                if len(parts) == 7:
+                    lines.append("\t".join(parts))
+                else:
+                    lines.append(trimmed)
+            
+            # Ensure the Netscape header exists at the top
+            header = "# Netscape HTTP Cookie File"
+            if not any(l.startswith(header) for l in lines[:3]):
+                lines.insert(0, header)
+                
+            cookies_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            print("[ytaudio] Successfully parsed and wrote cookies from environment variable to cookies.txt")
         except Exception as e:
             print(f"[ytaudio] Failed to write cookies from environment variable: {e}")
 
