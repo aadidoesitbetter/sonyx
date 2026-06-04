@@ -65,6 +65,33 @@ DOWNLOAD_DIR.mkdir(exist_ok=True)
 
 DISCORD_MAX_BYTES = 25 * 1024 * 1024   # 25 MB free-tier limit
 
+# ── Create cookies.txt on the fly from environment variable ─────────────────────
+cookies_env = os.environ.get("YOUTUBE_COOKIES") or os.environ.get("YT_COOKIES")
+if cookies_env:
+    try:
+        lines = []
+        for line in cookies_env.strip().splitlines():
+            trimmed = line.strip()
+            if not trimmed:
+                continue
+            if trimmed.startswith("#"):
+                lines.append(trimmed)
+                continue
+            parts = trimmed.split(None, 6)
+            if len(parts) == 7:
+                lines.append("\t".join(parts))
+            else:
+                lines.append(trimmed)
+        
+        header = "# Netscape HTTP Cookie File"
+        if not any(l.startswith(header) for l in lines[:3]):
+            lines.insert(0, header)
+            
+        Path("cookies.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        print("[ytaudio] Successfully wrote cookies.txt from environment variable!")
+    except Exception as e:
+        print(f"[ytaudio] Error writing cookies.txt from environment variable: {e}")
+
 
 def is_valid_yt_url(url: str) -> bool:
     return bool(YT_URL_PATTERN.search(url))
@@ -95,36 +122,7 @@ def build_ydl_opts(out_path: Path) -> dict:
         "verbose": True,
     }
 
-    # Dynamic cookies file creation from environment variable
-    cookies_env = os.environ.get("YOUTUBE_COOKIES") or os.environ.get("YT_COOKIES")
     cookies_path = Path("cookies.txt")
-    if cookies_env:
-        try:
-            lines = []
-            for line in cookies_env.strip().splitlines():
-                trimmed = line.strip()
-                if not trimmed:
-                    continue
-                if trimmed.startswith("#"):
-                    lines.append(trimmed)
-                    continue
-                # Split by tabs or spaces
-                parts = trimmed.split(None, 6)
-                if len(parts) == 7:
-                    lines.append("\t".join(parts))
-                else:
-                    lines.append(trimmed)
-            
-            # Ensure the Netscape header exists at the top
-            header = "# Netscape HTTP Cookie File"
-            if not any(l.startswith(header) for l in lines[:3]):
-                lines.insert(0, header)
-                
-            cookies_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-            print("[ytaudio] Successfully parsed and wrote cookies from environment variable to cookies.txt")
-        except Exception as e:
-            print(f"[ytaudio] Failed to write cookies from environment variable: {e}")
-
     if cookies_path.exists():
         opts["cookiefile"] = str(cookies_path)
         print("[ytaudio] Using cookies.txt for yt-dlp requests")
@@ -387,37 +385,12 @@ async def on_ready():
     print(f"[ytaudio] Prefix: '{PREFIX}'  |  Format: {AUDIO_FORMAT.upper()}  |  Quality: {AUDIO_QUALITY}")
     print(f"[ytaudio] Max duration: {format_duration(MAX_DURATION) if MAX_DURATION else 'unlimited'}")
 
-    # Check cookies environment variable on startup
-    cookies_env = os.environ.get("YOUTUBE_COOKIES") or os.environ.get("YT_COOKIES")
-    if cookies_env:
-        print(f"[ytaudio] Found YOUTUBE_COOKIES environment variable (length: {len(cookies_env)} characters)")
-        try:
-            lines = []
-            for line in cookies_env.strip().splitlines():
-                trimmed = line.strip()
-                if not trimmed:
-                    continue
-                if trimmed.startswith("#"):
-                    lines.append(trimmed)
-                    continue
-                # Split by tabs or spaces
-                parts = trimmed.split(None, 6)
-                if len(parts) == 7:
-                    lines.append("\t".join(parts))
-                else:
-                    lines.append(trimmed)
-            
-            # Ensure the Netscape header exists at the top
-            header = "# Netscape HTTP Cookie File"
-            if not any(l.startswith(header) for l in lines[:3]):
-                lines.insert(0, header)
-                
-            Path("cookies.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
-            print("[ytaudio] Successfully wrote cookies.txt at startup!")
-        except Exception as e:
-            print(f"[ytaudio] Error writing cookies.txt at startup: {e}")
+    # Verify cookies are loaded
+    cookies_path = Path("cookies.txt")
+    if cookies_path.exists():
+        print(f"[ytaudio] cookies.txt is active (size: {cookies_path.stat().st_size} bytes)")
     else:
-        print("[ytaudio] Warning: YOUTUBE_COOKIES or YT_COOKIES environment variable not found on startup.")
+        print("[ytaudio] Warning: No cookies.txt found. Downloads might fail on cloud hosts.")
 
     print("-" * 50)
 
