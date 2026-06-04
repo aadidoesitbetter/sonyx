@@ -130,6 +130,12 @@ YDL_BASE = {
     "noplaylist": True,
     "cookiefile": "cookies.txt" if Path("cookies.txt").exists() else None,
     "source_address": "0.0.0.0",
+    # Use mobile API clients — avoids YouTube bot detection without cookies
+    "extractor_args": {
+        "youtube": {
+            "player_client": ["ios", "android", "web"],
+        }
+    },
 }
 
 # URL patterns
