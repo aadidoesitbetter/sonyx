@@ -75,13 +75,21 @@ def is_valid_yt_url(url: str) -> bool:
 async def download_audio(url: str, job_dir: Path) -> dict:
     """Run pytubefix in a thread pool so the bot stays responsive."""
     def _blocking_download():
-        clients_to_try = ['ANDROID_MUSIC', 'WEB_CREATOR', 'IOS', 'ANDROID', 'WEB']
+        # WEB with po_token (uses Node.js on Railway) is most reliable
+        clients_to_try = [
+            ('WEB', True),       # WEB + auto po_token via Node.js
+            ('ANDROID_MUSIC', False),
+            ('IOS', False),
+            ('ANDROID', False),
+            ('WEB_CREATOR', False),
+            ('WEB', False),      # WEB without po_token as last resort
+        ]
         last_exception = None
         
-        for client_name in clients_to_try:
+        for client_name, use_po in clients_to_try:
             try:
-                # Try different clients to bypass datacenter IP blocks
-                yt = YouTube(url, client=client_name)
+                print(f"[ytaudio] Trying client={client_name} use_po_token={use_po}")
+                yt = YouTube(url, client=client_name, use_po_token=use_po)
                 
                 # We need the highest quality audio stream
                 audio_stream = yt.streams.get_audio_only()
