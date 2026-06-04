@@ -51,7 +51,31 @@ if not DISCORD_TOKEN or DISCORD_TOKEN == "YOUR_DISCORD_BOT_TOKEN_HERE":
 intents = discord.Intents.default()
 intents.message_content = True          # Required to read message text
 
-bot = commands.Bot(command_prefix=PREFIX, intents=intents, help_command=None)
+import json
+
+def load_prefix() -> str:
+    try:
+        if os.path.exists("prefix.json"):
+            with open("prefix.json", "r") as f:
+                data = json.load(f)
+                return data.get("prefix", PREFIX)
+    except Exception as e:
+        print(f"[ytaudio] Error loading prefix: {e}")
+    return PREFIX
+
+
+def save_prefix(new_prefix: str):
+    try:
+        with open("prefix.json", "w") as f:
+            json.dump({"prefix": new_prefix}, f)
+    except Exception as e:
+        print(f"[ytaudio] Error saving prefix: {e}")
+
+
+def get_prefix(bot, message) -> str:
+    return load_prefix()
+
+bot = commands.Bot(command_prefix=get_prefix, intents=intents, help_command=None)
 tree = bot.tree                         # Slash-command tree
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -126,7 +150,7 @@ def probe_duration_with_mutagen(file_path: Path) -> int:
     return 0
 
 
-def download_via_cobalt(url: str, job_dir: Path) -> dict:
+def download_via_cobalt(url: str, job_dir: Path, req_format: str = AUDIO_FORMAT) -> dict:
     """Download audio via Cobalt API instances."""
     import json
     import urllib.request
@@ -164,7 +188,7 @@ def download_via_cobalt(url: str, job_dir: Path) -> dict:
             payload = {
                 "url": url,
                 "downloadMode": "audio",
-                "audioFormat": AUDIO_FORMAT,
+                "audioFormat": req_format,
                 "audioBitrate": "320"
             }
             api_url = f"{instance}/"
@@ -193,10 +217,10 @@ def download_via_cobalt(url: str, job_dir: Path) -> dict:
             if not download_url:
                 raise Exception("No download URL returned by Cobalt API.")
 
-            filename = res_data.get("filename") or f"audio.{AUDIO_FORMAT}"
+            filename = res_data.get("filename") or f"audio.{req_format}"
             safe_filename = "".join(c for c in filename if c.isalnum() or c in "._- ")
             if not safe_filename:
-                safe_filename = f"audio.{AUDIO_FORMAT}"
+                safe_filename = f"audio.{req_format}"
 
             out_path = job_dir / safe_filename
             print(f"[ytaudio] Downloading file from Cobalt: {download_url} -> {out_path}")
@@ -220,8 +244,8 @@ def download_via_cobalt(url: str, job_dir: Path) -> dict:
 
             if not title:
                 title = filename
-                if title.lower().endswith(f".{AUDIO_FORMAT}"):
-                    title = title[:-len(AUDIO_FORMAT)-1]
+                if title.lower().endswith(f".{req_format}"):
+                    title = title[:-len(req_format)-1]
                 elif '.' in title:
                     title = title.rsplit('.', 1)[0]
 
@@ -243,7 +267,7 @@ def download_via_cobalt(url: str, job_dir: Path) -> dict:
         raise Exception("All Cobalt API instances failed.")
 
 
-def download_via_ytdlp(url: str, job_dir: Path) -> dict:
+def download_via_ytdlp(url: str, job_dir: Path, req_format: str = AUDIO_FORMAT) -> dict:
     """Fallback audio download via yt-dlp."""
     print(f"[ytaudio] Trying yt-dlp fallback download...")
     
@@ -253,7 +277,7 @@ def download_via_ytdlp(url: str, job_dir: Path) -> dict:
         'outtmpl': str(job_dir / '%(title)s.%(ext)s'),
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
-            'preferredcodec': AUDIO_FORMAT,
+            'preferredcodec': req_format,
             'preferredquality': AUDIO_QUALITY,
         }],
         'quiet': True,
@@ -274,22 +298,22 @@ def download_via_ytdlp(url: str, job_dir: Path) -> dict:
     }
 
 
-async def download_audio(url: str, job_dir: Path) -> dict:
+async def download_audio(url: str, job_dir: Path, req_format: str = AUDIO_FORMAT) -> dict:
     """Run Cobalt download first, falling back to yt-dlp if it fails."""
     loop = asyncio.get_running_loop()
     try:
         print("[ytaudio] Attempting primary Cobalt API download...")
-        info = await loop.run_in_executor(None, lambda: download_via_cobalt(url, job_dir))
+        info = await loop.run_in_executor(None, lambda: download_via_cobalt(url, job_dir, req_format))
         return info
     except Exception as e:
         print(f"[ytaudio] Cobalt download failed: {e}. Attempting yt-dlp fallback...")
-        info = await loop.run_in_executor(None, lambda: download_via_ytdlp(url, job_dir))
+        info = await loop.run_in_executor(None, lambda: download_via_ytdlp(url, job_dir, req_format))
         return info
 
 
-def find_output_file(job_dir: Path) -> Path | None:
+def find_output_file(job_dir: Path, req_format: str = AUDIO_FORMAT) -> Path | None:
     """Return the first audio file found in job_dir."""
-    for ext in (AUDIO_FORMAT, "m4a", "mp3", "opus", "wav", "flac", "webm", "ogg"):
+    for ext in (req_format, "m4a", "mp3", "opus", "wav", "flac", "webm", "ogg"):
         files = list(job_dir.glob(f"*.{ext}"))
         if files:
             return files[0]
@@ -304,7 +328,7 @@ def format_duration(seconds: int) -> str:
     return f"{h}h {m}m {s}s" if h else f"{m}m {s}s"
 
 
-def build_embed(info: dict, file_size_bytes: int) -> discord.Embed:
+def build_embed(info: dict, file_size_bytes: int, req_format: str = AUDIO_FORMAT) -> discord.Embed:
     title = info.get("title", "Unknown Title")
     uploader = info.get("uploader") or info.get("channel", "Unknown")
     duration = info.get("duration", 0)
@@ -318,7 +342,7 @@ def build_embed(info: dict, file_size_bytes: int) -> discord.Embed:
     )
     embed.add_field(name="Channel", value=uploader, inline=True)
     embed.add_field(name="Duration", value=format_duration(duration), inline=True)
-    embed.add_field(name="Format", value=AUDIO_FORMAT.upper(), inline=True)
+    embed.add_field(name="Format", value=req_format.upper(), inline=True)
     size_mb = file_size_bytes / (1024 * 1024)
     embed.add_field(name="File size", value=f"{size_mb:.1f} MB", inline=True)
     if thumbnail:
@@ -331,8 +355,10 @@ def build_embed(info: dict, file_size_bytes: int) -> discord.Embed:
 async def process_request(
     ctx_or_interaction,
     url: str,
+    req_format: str = None
 ):
     """Shared logic for both prefix and slash commands."""
+    fmt = req_format.lower() if (req_format and req_format.lower() in ("mp3", "m4a", "opus", "wav", "flac", "webm", "ogg")) else AUDIO_FORMAT
 
     # Determine whether we're dealing with a classic Context or an Interaction
     is_interaction = isinstance(ctx_or_interaction, discord.Interaction)
@@ -415,8 +441,8 @@ async def process_request(
                 return
 
         # ── Download ───────────────────────────────────────────────────────
-        info = await download_audio(url, job_dir)
-        audio_file = find_output_file(job_dir)
+        info = await download_audio(url, job_dir, fmt)
+        audio_file = find_output_file(job_dir, fmt)
 
         if audio_file is None or not audio_file.exists():
             await reply("❌  Download succeeded but the audio file couldn't be located. Check that `ffmpeg` is installed.", ephemeral=True)
@@ -435,7 +461,7 @@ async def process_request(
             return
 
         # ── Send ───────────────────────────────────────────────────────────
-        embed = build_embed(info, file_size)
+        embed = build_embed(info, file_size, fmt)
         discord_file = discord.File(str(audio_file), filename=audio_file.name)
 
         if is_interaction:
@@ -475,70 +501,180 @@ async def process_request(
             pass
 
 
-# ── Prefix command ────────────────────────────────────────────────────────────
+# ── Help Embed Helper ────────────────────────────────────────────────────────
+def get_help_embed(prefix: str) -> discord.Embed:
+    embed = discord.Embed(
+        title="🎵  ytaudio bot — Help",
+        description="Download audio from any YouTube video and receive it as a file.",
+        color=0xFF0000,
+    )
+    embed.add_field(
+        name="Download commands",
+        value=(
+            f"`{prefix}ytaudio [format] <url>`\n"
+            f"`{prefix}yta [format] <url>`  (shorthand)\n"
+            f"**Supported formats:** `mp3`, `flac`, `m4a`, `opus`, `wav`, `ogg` (defaults to `mp3`)\n"
+            f"**Example:** `{prefix}yta flac https://youtube.com/watch?v=dQw4w9WgXcQ`"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Utility commands",
+        value=(
+            f"`{prefix}ping` - Check latency\n"
+            f"`{prefix}prefix` - View current prefix\n"
+            f"`{prefix}setprefix <new_prefix>` - Change prefix (Admin only)"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Slash commands",
+        value=(
+            "`/ytaudio url:<url> [format]`\n"
+            "`/ping`\n"
+            "`/prefix`\n"
+            "`/setprefix new_prefix:<new_prefix>`"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Limits",
+        value=(
+            f"• Max duration: **{format_duration(MAX_DURATION)}** (0 = no limit)\n"
+            f"• Max file size: **25 MB** (Discord limit)\n"
+            f"• Output format: **{AUDIO_FORMAT.upper()}** (quality {AUDIO_QUALITY})"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="Edit config.py to change default format, quality, and limits.")
+    return embed
+
+
+# ── Prefix commands ───────────────────────────────────────────────────────────
 @bot.command(name="ytaudio", aliases=["yta", "audio"])
 async def ytaudio_prefix(ctx: commands.Context, *, arg: str = ""):
-    """
-    Download YouTube audio and send it here.
-    Usage: {prefix}ytaudio <youtube_url>
-    """
+    """Download YouTube audio and send it here."""
     arg = arg.strip()
 
     if not arg or arg.lower() in ("help", "--help", "-h"):
-        embed = discord.Embed(
-            title="🎵  ytaudio bot — Help",
-            description="Download audio from any YouTube video and receive it as a file.",
-            color=0xFF0000,
-        )
-        embed.add_field(
-            name="Prefix command",
-            value=f"`{PREFIX}ytaudio <url>`\n`{PREFIX}yta <url>`  (shorthand)",
-            inline=False,
-        )
-        embed.add_field(
-            name="Slash command",
-            value="`/ytaudio url:<url>`",
-            inline=False,
-        )
-        embed.add_field(
-            name="Limits",
-            value=(
-                f"• Max duration: **{format_duration(MAX_DURATION)}** (0 = no limit)\n"
-                f"• Max file size: **25 MB** (Discord limit)\n"
-                f"• Output format: **{AUDIO_FORMAT.upper()}** (quality {AUDIO_QUALITY})"
-            ),
-            inline=False,
-        )
-        embed.set_footer(text="Edit config.py to change prefix, format, quality, and limits.")
-        await ctx.reply(embed=embed)
+        await ctx.reply(embed=get_help_embed(ctx.prefix))
         return
 
-    await process_request(ctx, arg)
+    # Check if first word is format specification
+    parts = arg.split(maxsplit=1)
+    req_format = None
+    url = arg
+    
+    if len(parts) == 2:
+        potential_format = parts[0].lower().strip()
+        if potential_format in ("mp3", "m4a", "opus", "wav", "flac", "webm", "ogg"):
+            req_format = potential_format
+            url = parts[1].strip()
+
+    await process_request(ctx, url, req_format)
 
 
-# ── Slash command ─────────────────────────────────────────────────────────────
+@bot.command(name="help")
+async def help_prefix(ctx: commands.Context):
+    """Show help information."""
+    await ctx.reply(embed=get_help_embed(ctx.prefix))
+
+
+@bot.command(name="ping")
+async def ping_prefix(ctx: commands.Context):
+    """Check bot latency."""
+    latency = round(bot.latency * 1000)
+    await ctx.reply(f"🏓  Pong! Latency is **{latency}ms**.")
+
+
+@bot.command(name="prefix")
+async def prefix_prefix(ctx: commands.Context):
+    """View current prefix."""
+    current = load_prefix()
+    await ctx.reply(f"ℹ️  The current bot prefix is `{current}`")
+
+
+@bot.command(name="setprefix")
+@commands.has_permissions(administrator=True)
+async def setprefix_prefix(ctx: commands.Context, new_prefix: str = ""):
+    """Set new prefix."""
+    new_prefix = new_prefix.strip()
+    if not new_prefix:
+        await ctx.reply("❌  Please specify a new prefix. Example: `,setprefix !`")
+        return
+    if len(new_prefix) > 5:
+        await ctx.reply("❌  Prefix must be 5 characters or less.")
+        return
+    save_prefix(new_prefix)
+    await ctx.reply(f"✅  Prefix updated! The new prefix is `{new_prefix}`")
+
+
+# ── Slash commands ────────────────────────────────────────────────────────────
 @tree.command(name="ytaudio", description="Download YouTube audio and receive it as a file")
-@app_commands.describe(url="The YouTube video URL to extract audio from")
-async def ytaudio_slash(interaction: discord.Interaction, url: str):
-    await process_request(interaction, url.strip())
+@app_commands.describe(
+    url="The YouTube video URL to extract audio from",
+    format="The output audio format (default is mp3)"
+)
+@app_commands.choices(format=[
+    app_commands.Choice(name="mp3", value="mp3"),
+    app_commands.Choice(name="m4a", value="m4a"),
+    app_commands.Choice(name="flac", value="flac"),
+    app_commands.Choice(name="opus", value="opus"),
+    app_commands.Choice(name="wav", value="wav"),
+    app_commands.Choice(name="ogg", value="ogg"),
+])
+async def ytaudio_slash(interaction: discord.Interaction, url: str, format: str = None):
+    await process_request(interaction, url.strip(), format)
+
+
+@tree.command(name="help", description="Show help information for ytaudio bot")
+async def help_slash(interaction: discord.Interaction):
+    prefix = load_prefix()
+    await interaction.response.send_message(embed=get_help_embed(prefix))
+
+
+@tree.command(name="ping", description="Check the bot's latency/ping")
+async def ping_slash(interaction: discord.Interaction):
+    latency = round(bot.latency * 1000)
+    await interaction.response.send_message(f"🏓  Pong! Latency is **{latency}ms**.")
+
+
+@tree.command(name="prefix", description="View the current command prefix for the bot")
+async def prefix_slash(interaction: discord.Interaction):
+    current = load_prefix()
+    await interaction.response.send_message(f"ℹ️  The current bot prefix is `{current}`")
+
+
+@tree.command(name="setprefix", description="Set a new command prefix for the bot (Admin only)")
+@app_commands.describe(new_prefix="The new prefix (max 5 characters)")
+@app_commands.checks.has_permissions(administrator=True)
+async def setprefix_slash(interaction: discord.Interaction, new_prefix: str):
+    new_prefix = new_prefix.strip()
+    if not new_prefix:
+        await interaction.response.send_message("❌  Please specify a new prefix.", ephemeral=True)
+        return
+    if len(new_prefix) > 5:
+        await interaction.response.send_message("❌  Prefix must be 5 characters or less.", ephemeral=True)
+        return
+    save_prefix(new_prefix)
+    await interaction.response.send_message(f"✅  Prefix updated! The new prefix is `{new_prefix}`")
 
 
 # ── Bot events ────────────────────────────────────────────────────────────────
 @bot.event
 async def on_ready():
-    # Sync slash commands globally (may take up to 1 hour to appear everywhere)
+    # Sync slash commands globally
     try:
         synced = await tree.sync()
         print(f"[ytaudio] Slash commands synced: {len(synced)} command(s)")
     except Exception as e:
         print(f"[ytaudio] Failed to sync slash commands: {e}")
 
+    current_prefix = load_prefix()
     print(f"[ytaudio] Logged in as {bot.user} (ID: {bot.user.id})")
-    print(f"[ytaudio] Prefix: '{PREFIX}'  |  Format: {AUDIO_FORMAT.upper()}  |  Quality: {AUDIO_QUALITY}")
+    print(f"[ytaudio] Prefix: '{current_prefix}'  |  Format: {AUDIO_FORMAT.upper()}  |  Quality: {AUDIO_QUALITY}")
     print(f"[ytaudio] Max duration: {format_duration(MAX_DURATION) if MAX_DURATION else 'unlimited'}")
-
-    print("[ytaudio] Using pytubefix for audio extraction (bypassing bot checks).")
-
+    print(f"[ytaudio] Using Cobalt API for audio extraction.")
     print("-" * 50)
 
 
@@ -547,7 +683,10 @@ async def on_command_error(ctx: commands.Context, error):
     if isinstance(error, commands.CommandNotFound):
         return  # Silently ignore unknown commands
     if isinstance(error, commands.MissingRequiredArgument):
-        await ctx.reply(f"❌  Missing URL. Usage: `{PREFIX}ytaudio <url>`")
+        await ctx.reply(f"❌  Missing URL. Usage: `{ctx.prefix}ytaudio <url>`")
+        return
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.reply("❌  You do not have permission to run this command (Administrator permission required).")
         return
     raise error
 
