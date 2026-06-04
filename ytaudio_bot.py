@@ -24,7 +24,7 @@ import uuid
 from pathlib import Path
 
 import discord
-import yt_dlp
+from pytubefix import YouTube
 from discord import app_commands
 from discord.ext import commands
 
@@ -65,83 +65,35 @@ DOWNLOAD_DIR.mkdir(exist_ok=True)
 
 DISCORD_MAX_BYTES = 25 * 1024 * 1024   # 25 MB free-tier limit
 
-# ── Create cookies.txt on the fly from environment variable ─────────────────────
-cookies_env = os.environ.get("YOUTUBE_COOKIES") or os.environ.get("YT_COOKIES")
-if cookies_env:
-    try:
-        lines = []
-        for line in cookies_env.strip().splitlines():
-            trimmed = line.strip()
-            if not trimmed:
-                continue
-            if trimmed.startswith("#"):
-                lines.append(trimmed)
-                continue
-            parts = trimmed.split(None, 6)
-            if len(parts) == 7:
-                lines.append("\t".join(parts))
-            else:
-                lines.append(trimmed)
-        
-        header = "# Netscape HTTP Cookie File"
-        if not any(l.startswith(header) for l in lines[:3]):
-            lines.insert(0, header)
-            
-        Path("cookies.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
-        print("[ytaudio] Successfully wrote cookies.txt from environment variable!")
-    except Exception as e:
-        print(f"[ytaudio] Error writing cookies.txt from environment variable: {e}")
-
+# ── No longer using cookies.txt as we use pytubefix ─────────────────────────────
+# pytubefix bypasses basic bot checks automatically.
 
 def is_valid_yt_url(url: str) -> bool:
     return bool(YT_URL_PATTERN.search(url))
 
 
-def build_ydl_opts(out_path: Path) -> dict:
-    """Build yt-dlp options for audio extraction."""
-    postprocessors = [
-        {
-            "key": "FFmpegExtractAudio",
-            "preferredcodec": AUDIO_FORMAT,
-            "preferredquality": AUDIO_QUALITY,
-        }
-    ]
-
-    opts = {
-        # Best audio stream available
-        "format": "bestaudio/best",
-        "outtmpl": str(out_path / "%(title)s.%(ext)s"),
-        "postprocessors": postprocessors,
-        # Restrict filename characters for safety
-        "restrictfilenames": True,
-        # Metadata embedding (optional but nice)
-        "postprocessor_args": ["-id3v2_version", "3"],
-        "writethumbnail": False,
-        "quiet": False,
-        "no_warnings": False,
-        "verbose": True,
-        # Bypass YouTube bot detection by masking as a mobile client
-        "extractor_args": {"youtube": {"player_client": ["ios", "android"]}}
-    }
-
-    cookies_path = Path("cookies.txt")
-    if cookies_path.exists():
-        opts["cookiefile"] = str(cookies_path)
-        print("[ytaudio] Using cookies.txt for yt-dlp requests")
-    else:
-        print("[ytaudio] Warning: No cookies.txt found or configured. YouTube requests may get blocked with bot detection.")
-
-    return opts
-
-
-async def download_audio(url: str, job_dir: Path) -> tuple[Path, dict]:
-    """Run yt-dlp in a thread pool so the bot stays responsive."""
-
+async def download_audio(url: str, job_dir: Path) -> dict:
+    """Run pytubefix in a thread pool so the bot stays responsive."""
     def _blocking_download():
-        opts = build_ydl_opts(job_dir)
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            return info
+        # Using WEB client which automatically generates po_token if needed
+        yt = YouTube(url, client='WEB')
+        
+        # We need the highest quality audio stream
+        audio_stream = yt.streams.get_audio_only()
+        if not audio_stream:
+            raise Exception("No audio stream found for this video.")
+        
+        # Download (pytubefix usually downloads as .m4a or .mp4 for audio-only)
+        out_file = audio_stream.download(output_path=str(job_dir))
+        
+        # Return info dict similar to what we used before
+        return {
+            "title": yt.title,
+            "uploader": yt.author,
+            "duration": yt.length,
+            "webpage_url": yt.watch_url,
+            "thumbnail": yt.thumbnail_url,
+        }
 
     loop = asyncio.get_running_loop()
     info = await loop.run_in_executor(None, _blocking_download)
@@ -242,12 +194,10 @@ async def process_request(
         # ── Probe duration first (no download) ────────────────────────────
         if MAX_DURATION > 0:
             def _probe():
-                with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True}) as ydl:
-                    return ydl.extract_info(url, download=False)
+                return YouTube(url, client='WEB').length
 
             loop = asyncio.get_running_loop()
-            probe_info = await loop.run_in_executor(None, _probe)
-            duration = probe_info.get("duration", 0)
+            duration = await loop.run_in_executor(None, _probe)
             if duration and duration > MAX_DURATION:
                 await reply(
                     f"❌  Video is **{format_duration(duration)}** long — the limit is **{format_duration(MAX_DURATION)}**.\n"
@@ -287,26 +237,18 @@ async def process_request(
             await ctx_or_interaction.message.add_reaction("✅")
             await ctx_or_interaction.reply(embed=embed, file=discord_file)
 
-    except yt_dlp.utils.DownloadError as e:
+    except Exception as e:
         err = str(e)
-        # Friendly messages for common errors
-        if "Video unavailable" in err:
+        if "age restricted" in err.lower():
+            msg = "❌  Age-restricted video — cannot be downloaded."
+        elif "unavailable" in err.lower() or "private" in err.lower():
             msg = "❌  Video unavailable (private, deleted, or region-locked)."
-        elif "age" in err.lower():
-            msg = "❌  Age-restricted video — cannot be downloaded without authentication."
-        elif "copyright" in err.lower():
-            msg = "❌  This video is blocked due to a copyright claim."
         else:
-            msg = f"❌  yt-dlp error: ```{err[:400]}```"
+            msg = f"❌  Error downloading video: ```{err[:400]}```"
+            tb = traceback.format_exc()
+            print(f"[ytaudio] Download error details:\n{tb}")
+            
         await reply(msg, ephemeral=True)
-        if not is_interaction:
-            await ctx_or_interaction.message.remove_reaction("⏳", bot.user)
-            await ctx_or_interaction.message.add_reaction("❌")
-
-    except Exception:
-        tb = traceback.format_exc()
-        print(f"[ytaudio] Unexpected error:\n{tb}")
-        await reply("❌  An unexpected error occurred. Check the bot console for details.", ephemeral=True)
         if not is_interaction:
             await ctx_or_interaction.message.remove_reaction("⏳", bot.user)
             await ctx_or_interaction.message.add_reaction("❌")
@@ -387,12 +329,7 @@ async def on_ready():
     print(f"[ytaudio] Prefix: '{PREFIX}'  |  Format: {AUDIO_FORMAT.upper()}  |  Quality: {AUDIO_QUALITY}")
     print(f"[ytaudio] Max duration: {format_duration(MAX_DURATION) if MAX_DURATION else 'unlimited'}")
 
-    # Verify cookies are loaded
-    cookies_path = Path("cookies.txt")
-    if cookies_path.exists():
-        print(f"[ytaudio] cookies.txt is active (size: {cookies_path.stat().st_size} bytes)")
-    else:
-        print("[ytaudio] Warning: No cookies.txt found. Downloads might fail on cloud hosts.")
+    print("[ytaudio] Using pytubefix for audio extraction (bypassing bot checks).")
 
     print("-" * 50)
 
