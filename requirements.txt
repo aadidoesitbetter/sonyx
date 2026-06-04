@@ -1,5 +1,5 @@
 # ytaudio bot — requirements
 discord.py>=2.3.0
-pytubefix>=8.4.1
-nodejs-wheel-binaries>=22.13.1
+yt-dlp>=2025.1.15
 python-dotenv>=1.0.0
+mutagen>=1.47.0

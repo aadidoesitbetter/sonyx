@@ -24,7 +24,8 @@ import uuid
 from pathlib import Path
 
 import discord
-from pytubefix import YouTube
+import yt_dlp
+import mutagen
 from discord import app_commands
 from discord.ext import commands
 
@@ -88,23 +89,45 @@ def extract_video_id(url: str) -> str | None:
     return None
 
 
-def probe_duration_with_ffprobe(file_path: Path) -> int:
-    """Extract audio duration in seconds using ffprobe."""
-    import subprocess
+def fetch_youtube_metadata(url: str) -> dict:
+    """Fetch video title, uploader, and thumbnail from YouTube's official oEmbed API."""
+    import json
+    import urllib.request
+    import urllib.parse
+    import urllib.error
+    
     try:
-        cmd = [
-            "ffprobe", "-v", "error", "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1", str(file_path)
-        ]
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
-        return int(float(result.stdout.strip()))
+        oembed_url = f"https://www.youtube.com/oembed?url={urllib.parse.quote(url)}&format=json"
+        req = urllib.request.Request(
+            oembed_url,
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        )
+        with urllib.request.urlopen(req, timeout=10) as response:
+            data = json.loads(response.read().decode('utf-8'))
+            
+        return {
+            "title": data.get("title"),
+            "uploader": data.get("author_name") or "YouTube",
+            "thumbnail": data.get("thumbnail_url")
+        }
     except Exception as e:
-        print(f"[ytaudio] ffprobe failed to get duration: {e}")
-        return 0
+        print(f"[ytaudio] oEmbed metadata fetch failed: {e}")
+        return {}
+
+
+def probe_duration_with_mutagen(file_path: Path) -> int:
+    """Extract audio duration in seconds using mutagen."""
+    try:
+        audio = mutagen.File(file_path)
+        if audio and audio.info and hasattr(audio.info, 'length'):
+            return int(audio.info.length)
+    except Exception as e:
+        print(f"[ytaudio] mutagen failed to get duration: {e}")
+    return 0
 
 
 def download_via_cobalt(url: str, job_dir: Path) -> dict:
-    """Fallback audio download via Cobalt API instances."""
+    """Download audio via Cobalt API instances."""
     import json
     import urllib.request
     import urllib.error
@@ -126,6 +149,14 @@ def download_via_cobalt(url: str, job_dir: Path) -> dict:
         if inst not in instances:
             instances.append(inst)
 
+    # 1. Fetch metadata via oEmbed first (never blocked)
+    meta = fetch_youtube_metadata(url)
+    video_id = extract_video_id(url)
+    
+    title = meta.get("title")
+    uploader = meta.get("uploader", "YouTube (via Cobalt)")
+    thumbnail_url = meta.get("thumbnail") or (f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg" if video_id else "")
+
     last_err = None
     for instance in instances:
         try:
@@ -136,7 +167,6 @@ def download_via_cobalt(url: str, job_dir: Path) -> dict:
                 "audioFormat": AUDIO_FORMAT,
                 "audioBitrate": "320"
             }
-            # v10+ Cobalt uses root path POST /
             api_url = f"{instance}/"
             
             req = urllib.request.Request(
@@ -185,20 +215,19 @@ def download_via_cobalt(url: str, job_dir: Path) -> dict:
                             break
                         out_file.write(chunk)
 
-            # Gather metadata best effort
-            video_id = extract_video_id(url)
-            thumbnail_url = f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg" if video_id else ""
-            duration = probe_duration_with_ffprobe(out_path)
+            # 2. Get exact duration from the downloaded file using mutagen
+            duration = probe_duration_with_mutagen(out_path)
 
-            title = filename
-            if title.lower().endswith(f".{AUDIO_FORMAT}"):
-                title = title[:-len(AUDIO_FORMAT)-1]
-            elif '.' in title:
-                title = title.rsplit('.', 1)[0]
+            if not title:
+                title = filename
+                if title.lower().endswith(f".{AUDIO_FORMAT}"):
+                    title = title[:-len(AUDIO_FORMAT)-1]
+                elif '.' in title:
+                    title = title.rsplit('.', 1)[0]
 
             return {
                 "title": title,
-                "uploader": "YouTube (via Cobalt)",
+                "uploader": uploader,
                 "duration": duration,
                 "webpage_url": url,
                 "thumbnail": thumbnail_url,
@@ -211,62 +240,50 @@ def download_via_cobalt(url: str, job_dir: Path) -> dict:
     if last_err:
         raise last_err
     else:
-        raise Exception("All Cobalt API fallback instances failed.")
+        raise Exception("All Cobalt API instances failed.")
+
+
+def download_via_ytdlp(url: str, job_dir: Path) -> dict:
+    """Fallback audio download via yt-dlp."""
+    print(f"[ytaudio] Trying yt-dlp fallback download...")
+    
+    # We want to extract audio only, in the requested format and quality
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'outtmpl': str(job_dir / '%(title)s.%(ext)s'),
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': AUDIO_FORMAT,
+            'preferredquality': AUDIO_QUALITY,
+        }],
+        'quiet': True,
+        'no_warnings': True,
+    }
+    
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info_dict = ydl.extract_info(url, download=True)
+        
+    duration = int(info_dict.get("duration", 0))
+    
+    return {
+        "title": info_dict.get("title"),
+        "uploader": info_dict.get("uploader"),
+        "duration": duration,
+        "webpage_url": info_dict.get("webpage_url"),
+        "thumbnail": info_dict.get("thumbnail"),
+    }
 
 
 async def download_audio(url: str, job_dir: Path) -> dict:
-    """Run pytubefix in a thread pool so the bot stays responsive. Fallback to Cobalt if blocked."""
-    def _blocking_download():
-        # WEB with po_token (uses Node.js on Railway) is most reliable
-        clients_to_try = [
-            ('WEB', True),       # WEB + auto po_token via Node.js
-            ('ANDROID_MUSIC', False),
-            ('IOS', False),
-            ('ANDROID', False),
-            ('WEB_CREATOR', False),
-            ('WEB', False),      # WEB without po_token as last resort
-        ]
-        last_exception = None
-        
-        for client_name, use_po in clients_to_try:
-            try:
-                print(f"[ytaudio] Trying client={client_name} use_po_token={use_po}")
-                yt = YouTube(url, client=client_name, use_po_token=use_po)
-                
-                # We need the highest quality audio stream
-                audio_stream = yt.streams.get_audio_only()
-                if not audio_stream:
-                    continue # Try next client if no stream found
-                
-                # Download
-                out_file = audio_stream.download(output_path=str(job_dir))
-                
-                # Return info dict
-                return {
-                    "title": yt.title,
-                    "uploader": yt.author,
-                    "duration": yt.length,
-                    "webpage_url": yt.watch_url,
-                    "thumbnail": yt.thumbnail_url,
-                }
-            except Exception as e:
-                last_exception = e
-                # Fall through and try next client
-                continue
-                
-        # If we exhausted all clients and still failed, raise the last error
-        if last_exception:
-            raise last_exception
-        else:
-            raise Exception("No audio stream found for this video across all clients.")
-
+    """Run Cobalt download first, falling back to yt-dlp if it fails."""
     loop = asyncio.get_running_loop()
     try:
-        info = await loop.run_in_executor(None, _blocking_download)
+        print("[ytaudio] Attempting primary Cobalt API download...")
+        info = await loop.run_in_executor(None, lambda: download_via_cobalt(url, job_dir))
         return info
     except Exception as e:
-        print(f"[ytaudio] pytubefix download failed: {e}. Attempting Cobalt API fallback...")
-        info = await loop.run_in_executor(None, lambda: download_via_cobalt(url, job_dir))
+        print(f"[ytaudio] Cobalt download failed: {e}. Attempting yt-dlp fallback...")
+        info = await loop.run_in_executor(None, lambda: download_via_ytdlp(url, job_dir))
         return info
 
 
@@ -364,10 +381,25 @@ async def process_request(
         # ── Probe duration first (no download) ────────────────────────────
         if MAX_DURATION > 0:
             def _probe():
-                clients_to_try = ['ANDROID_MUSIC', 'WEB_CREATOR', 'IOS', 'ANDROID', 'WEB']
-                for client_name in clients_to_try:
+                video_id = extract_video_id(url)
+                if not video_id:
+                    return 0
+                instances = [
+                    "https://yewtu.be",
+                    "https://vid.puffyan.us",
+                    "https://invidious.flokinet.to",
+                ]
+                import json
+                import urllib.request
+                for inst in instances:
                     try:
-                        return YouTube(url, client=client_name).length
+                        req = urllib.request.Request(
+                            f"{inst}/api/v1/videos/{video_id}",
+                            headers={'User-Agent': 'Mozilla/5.0'}
+                        )
+                        with urllib.request.urlopen(req, timeout=5) as response:
+                            data = json.loads(response.read().decode('utf-8'))
+                            return data.get("lengthSeconds", 0)
                     except Exception:
                         pass
                 return 0 # Fallback to 0 if all fail (allows download to attempt)
