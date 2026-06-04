@@ -181,6 +181,10 @@ def download_via_cobalt(url: str, job_dir: Path, req_format: str = AUDIO_FORMAT)
     uploader = meta.get("uploader", "YouTube (via Cobalt)")
     thumbnail_url = meta.get("thumbnail") or (f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg" if video_id else "")
 
+    cobalt_fmt = req_format
+    if cobalt_fmt not in ("mp3", "ogg", "wav", "opus", "best"):
+        cobalt_fmt = "best"
+
     last_err = None
     for instance in instances:
         try:
@@ -188,7 +192,7 @@ def download_via_cobalt(url: str, job_dir: Path, req_format: str = AUDIO_FORMAT)
             payload = {
                 "url": url,
                 "downloadMode": "audio",
-                "audioFormat": req_format,
+                "audioFormat": cobalt_fmt,
                 "audioBitrate": "320"
             }
             api_url = f"{instance}/"
@@ -256,6 +260,19 @@ def download_via_cobalt(url: str, job_dir: Path, req_format: str = AUDIO_FORMAT)
                 "webpage_url": url,
                 "thumbnail": thumbnail_url,
             }
+        except urllib.error.HTTPError as e:
+            err_code = e.code
+            err_reason = e.reason
+            try:
+                err_body = e.read().decode('utf-8')
+                res_data = json.loads(err_body)
+                error_msg = res_data.get("error", {}).get("code") or res_data.get("error") or f"HTTP {err_code} {err_reason}"
+                print(f"[ytaudio] Cobalt instance {instance} failed: {error_msg}")
+                last_err = Exception(f"Cobalt error: {error_msg}")
+            except Exception:
+                print(f"[ytaudio] Cobalt instance {instance} failed: HTTP {err_code} {err_reason}")
+                last_err = Exception(f"Cobalt HTTP Error {err_code}: {err_reason}")
+            continue
         except Exception as e:
             print(f"[ytaudio] Cobalt instance {instance} failed: {e}")
             last_err = e
@@ -365,12 +382,41 @@ async def process_request(
 
     async def reply(content=None, embed=None, file=None, ephemeral=False):
         if is_interaction:
-            if ctx_or_interaction.response.is_done():
-                await ctx_or_interaction.followup.send(content=content, embed=embed, file=file, ephemeral=ephemeral)
-            else:
-                await ctx_or_interaction.response.send_message(content=content, embed=embed, file=file, ephemeral=ephemeral)
+            try:
+                if ctx_or_interaction.response.is_done():
+                    await ctx_or_interaction.followup.send(content=content, embed=embed, file=file, ephemeral=ephemeral)
+                else:
+                    await ctx_or_interaction.response.send_message(content=content, embed=embed, file=file, ephemeral=ephemeral)
+            except discord.Forbidden:
+                # If interaction fails (e.g. lacks Embed Links)
+                if embed:
+                    plain_text = content or ""
+                    if not plain_text and hasattr(embed, 'title'):
+                        plain_text = f"🎵  **{embed.title}**"
+                    try:
+                        if ctx_or_interaction.response.is_done():
+                            await ctx_or_interaction.followup.send(content=plain_text, file=file, ephemeral=ephemeral)
+                        else:
+                            await ctx_or_interaction.response.send_message(content=plain_text, file=file, ephemeral=ephemeral)
+                    except Exception:
+                        pass
         else:
-            await ctx_or_interaction.reply(content=content, embed=embed, file=file)
+            try:
+                await ctx_or_interaction.reply(content=content, embed=embed, file=file)
+            except discord.Forbidden:
+                # Try sending without reply reference (Read Message History might be missing)
+                try:
+                    await ctx_or_interaction.send(content=content, embed=embed, file=file)
+                except discord.Forbidden:
+                    # Try sending without embed (Embed Links might be missing)
+                    if embed:
+                        plain_text = content or ""
+                        if not plain_text and hasattr(embed, 'title'):
+                            plain_text = f"🎵  **{embed.title}**"
+                        try:
+                            await ctx_or_interaction.send(content=plain_text, file=file)
+                        except Exception:
+                            pass
 
     async def send_typing():
         if not is_interaction:
@@ -473,8 +519,8 @@ async def process_request(
 
     except Exception as e:
         err = str(e)
-        if "age restricted" in err.lower():
-            msg = "❌  Age-restricted video — cannot be downloaded."
+        if "age restricted" in err.lower() or "youtube.login" in err.lower() or "confirm you're not a bot" in err.lower() or "sign in to confirm" in err.lower():
+            msg = "❌  This video requires authentication/login (e.g. age-restricted or flagged by YouTube) and cannot be downloaded without cookies."
         elif "unavailable" in err.lower() or "private" in err.lower():
             msg = "❌  Video unavailable (private, deleted, or region-locked)."
         else:
@@ -484,8 +530,11 @@ async def process_request(
             
         await reply(msg, ephemeral=True)
         if not is_interaction:
-            await ctx_or_interaction.message.remove_reaction("⏳", bot.user)
-            await ctx_or_interaction.message.add_reaction("❌")
+            try:
+                await ctx_or_interaction.message.remove_reaction("⏳", bot.user)
+                await ctx_or_interaction.message.add_reaction("❌")
+            except Exception:
+                pass
 
     finally:
         # ── Cleanup ────────────────────────────────────────────────────────
@@ -577,21 +626,61 @@ async def ytaudio_prefix(ctx: commands.Context, *, arg: str = ""):
 @bot.command(name="help")
 async def help_prefix(ctx: commands.Context):
     """Show help information."""
-    await ctx.reply(embed=get_help_embed(ctx.prefix))
+    embed = get_help_embed(ctx.prefix)
+    try:
+        await ctx.reply(embed=embed)
+    except discord.Forbidden:
+        try:
+            await ctx.send(embed=embed)
+        except discord.Forbidden:
+            text_help = (
+                f"🎵  **ytaudio bot — Help**\n"
+                f"Download audio from any YouTube video and receive it as a file.\n\n"
+                f"**Download commands:**\n"
+                f"• `{ctx.prefix}ytaudio [format] <url>`\n"
+                f"• `{ctx.prefix}yta [format] <url>`  (shorthand)\n"
+                f"Supported formats: `mp3`, `flac`, `m4a`, `opus`, `wav`, `ogg`\n"
+                f"Example: `{ctx.prefix}yta flac https://youtube.com/watch?v=dQw4w9WgXcQ`\n\n"
+                f"**Utility commands:**\n"
+                f"• `{ctx.prefix}ping` - Check latency\n"
+                f"• `{ctx.prefix}prefix` - View current prefix\n"
+                f"• `{ctx.prefix}setprefix <new_prefix>` - Change prefix (Admin only)\n\n"
+                f"**Slash commands:**\n"
+                f"• `/ytaudio url:<url> [format]`\n"
+                f"• `/ping`\n"
+                f"• `/prefix`\n"
+                f"• `/setprefix new_prefix:<new_prefix>`"
+            )
+            try:
+                await ctx.send(text_help)
+            except Exception:
+                pass
 
 
 @bot.command(name="ping")
 async def ping_prefix(ctx: commands.Context):
     """Check bot latency."""
     latency = round(bot.latency * 1000)
-    await ctx.reply(f"🏓  Pong! Latency is **{latency}ms**.")
+    try:
+        await ctx.reply(f"🏓  Pong! Latency is **{latency}ms**.")
+    except discord.Forbidden:
+        try:
+            await ctx.send(f"🏓  Pong! Latency is **{latency}ms**.")
+        except Exception:
+            pass
 
 
 @bot.command(name="prefix")
 async def prefix_prefix(ctx: commands.Context):
     """View current prefix."""
     current = load_prefix()
-    await ctx.reply(f"ℹ️  The current bot prefix is `{current}`")
+    try:
+        await ctx.reply(f"ℹ️  The current bot prefix is `{current}`")
+    except discord.Forbidden:
+        try:
+            await ctx.send(f"ℹ️  The current bot prefix is `{current}`")
+        except Exception:
+            pass
 
 
 @bot.command(name="setprefix")
@@ -600,13 +689,31 @@ async def setprefix_prefix(ctx: commands.Context, new_prefix: str = ""):
     """Set new prefix."""
     new_prefix = new_prefix.strip()
     if not new_prefix:
-        await ctx.reply("❌  Please specify a new prefix. Example: `,setprefix !`")
+        try:
+            await ctx.reply("❌  Please specify a new prefix. Example: `,setprefix !`")
+        except discord.Forbidden:
+            try:
+                await ctx.send("❌  Please specify a new prefix. Example: `,setprefix !`")
+            except Exception:
+                pass
         return
     if len(new_prefix) > 5:
-        await ctx.reply("❌  Prefix must be 5 characters or less.")
+        try:
+            await ctx.reply("❌  Prefix must be 5 characters or less.")
+        except discord.Forbidden:
+            try:
+                await ctx.send("❌  Prefix must be 5 characters or less.")
+            except Exception:
+                pass
         return
     save_prefix(new_prefix)
-    await ctx.reply(f"✅  Prefix updated! The new prefix is `{new_prefix}`")
+    try:
+        await ctx.reply(f"✅  Prefix updated! The new prefix is `{new_prefix}`")
+    except discord.Forbidden:
+        try:
+            await ctx.send(f"✅  Prefix updated! The new prefix is `{new_prefix}`")
+        except Exception:
+            pass
 
 
 # ── Slash commands ────────────────────────────────────────────────────────────
@@ -682,12 +789,28 @@ async def on_ready():
 async def on_command_error(ctx: commands.Context, error):
     if isinstance(error, commands.CommandNotFound):
         return  # Silently ignore unknown commands
+    
+    # Check if the inner exception was a permission issue
+    if isinstance(error, commands.CommandInvokeError):
+        if isinstance(error.original, discord.Forbidden):
+            return  # Silently ignore permission errors during command execution
+
+    msg = None
     if isinstance(error, commands.MissingRequiredArgument):
-        await ctx.reply(f"❌  Missing URL. Usage: `{ctx.prefix}ytaudio <url>`")
+        msg = f"❌  Missing URL. Usage: `{ctx.prefix}ytaudio <url>`"
+    elif isinstance(error, commands.MissingPermissions):
+        msg = "❌  You do not have permission to run this command (Administrator permission required)."
+    
+    if msg:
+        try:
+            await ctx.reply(msg)
+        except discord.Forbidden:
+            try:
+                await ctx.send(msg)
+            except Exception:
+                pass
         return
-    if isinstance(error, commands.MissingPermissions):
-        await ctx.reply("❌  You do not have permission to run this command (Administrator permission required).")
-        return
+
     raise error
 
 
