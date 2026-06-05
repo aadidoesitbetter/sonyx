@@ -32,3 +32,18 @@ AUDIO_FORMAT     = "mp3"
 AUDIO_QUALITY    = "0"
 MAX_DURATION     = 600
 DELETE_AFTER_SEND = True
+
+# ── Lavalink (voice player) ───────────────────────────────────
+LAVALINK_HOST     = os.getenv("LAVALINK_HOST",     "lavalink.heavencloud.in")
+LAVALINK_PORT     = int(os.getenv("LAVALINK_PORT", "443"))
+LAVALINK_PASSWORD = os.getenv("LAVALINK_PASSWORD", "heavencloud")
+LAVALINK_SECURE   = os.getenv("LAVALINK_SECURE",   "True") == "True"
+LAVALINK_ID       = os.getenv("LAVALINK_ID",       "MAIN")
+
+# ── Spotify (for metadata bridging on Spotify links) ─────────
+SPOTIFY_CLIENT_ID     = os.getenv("SPOTIFY_CLIENT_ID",     "")
+SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "")
+
+# ── Voice player ──────────────────────────────────────────────
+PLAYER_VOLUME    = float(os.getenv("PLAYER_VOLUME",   "1.0"))
+DISCONNECT_AFTER = int(os.getenv("DISCONNECT_AFTER",  "300"))  # idle seconds
