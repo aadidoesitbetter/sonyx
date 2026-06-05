@@ -299,6 +299,7 @@ function registerSettingsCommands(): void {
     slashData: new SlashCommandBuilder().addStringOption((o) =>
       o
         .setName("source")
+        .setDescription("Search engine source")
         .setRequired(true)
         .addChoices(
           { name: "YouTube", value: "youtube" },
