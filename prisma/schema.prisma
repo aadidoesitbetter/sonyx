@@ -1,0 +1,131 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Guild {
+  guildId              String   @id @map("guild_id")
+  prefix               String   @default(",")
+  djRoleIds            String[] @default([]) @map("dj_role_ids")
+  djLockedCommands     String[] @default([]) @map("dj_locked_commands")
+  textChannelId        String?  @map("text_channel_id")
+  voiceChannelIds      String[] @default([]) @map("voice_channel_ids")
+  defaultVolume        Int      @default(100) @map("default_volume")
+  searchSource         String   @default("youtube") @map("search_source")
+  autoplayEnabled      Boolean  @default(false) @map("autoplay_enabled")
+  announceEnabled      Boolean  @default(true) @map("announce_enabled")
+  leaveCleanup         Boolean  @default(false) @map("leave_cleanup")
+  voteSkipEnabled      Boolean  @default(false) @map("vote_skip_enabled")
+  mode247              Boolean  @default(false) @map("mode_247")
+  setupDone            Boolean  @default(false) @map("setup_done")
+  requestChannelId     String?  @map("request_channel_id")
+  buttonStyle          String   @default("default") @map("button_style")
+  customProfileNick    String?  @map("custom_profile_nick")
+  customProfileBio     String?  @map("custom_profile_bio")
+  defaultPlaylistUrl   String?  @map("default_playlist_url")
+  djEnabled            Boolean  @default(false) @map("dj_enabled")
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+
+  djCommands DjCommand[]
+
+  @@map("guilds")
+}
+
+model User {
+  userId                String   @id @map("user_id")
+  totalTracksPlayed     Int      @default(0) @map("total_tracks_played")
+  totalListeningSeconds Int      @default(0) @map("total_listening_seconds")
+  spotifyAccessToken    String?  @map("spotify_access_token")
+  spotifyRefreshToken   String?  @map("spotify_refresh_token")
+  spotifyTokenExpiry    DateTime? @map("spotify_token_expiry")
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @updatedAt @map("updated_at")
+
+  listeningHistory ListeningHistory[]
+  playlists        Playlist[]
+  likedSongs       LikedSong[]
+
+  @@map("users")
+}
+
+model ListeningHistory {
+  id              String   @id @default(cuid())
+  userId          String   @map("user_id")
+  guildId         String   @map("guild_id")
+  trackTitle      String   @map("track_title")
+  trackArtist     String   @map("track_artist")
+  trackUrl        String   @map("track_url")
+  trackSource     String   @map("track_source")
+  durationSeconds Int      @default(0) @map("duration_seconds")
+  playedAt        DateTime @default(now()) @map("played_at")
+
+  user User @relation(fields: [userId], references: [userId], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([guildId])
+  @@map("listening_history")
+}
+
+model Playlist {
+  id        String   @id @default(cuid())
+  ownerId   String   @map("owner_id")
+  name      String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  owner User           @relation(fields: [ownerId], references: [userId], onDelete: Cascade)
+  songs PlaylistSong[]
+
+  @@unique([ownerId, name])
+  @@map("playlists")
+}
+
+model PlaylistSong {
+  id              String   @id @default(cuid())
+  playlistId      String   @map("playlist_id")
+  trackTitle      String   @map("track_title")
+  trackArtist     String   @map("track_artist")
+  trackUrl        String   @map("track_url")
+  trackSource     String   @map("track_source")
+  durationSeconds Int      @default(0) @map("duration_seconds")
+  position        Int      @default(0)
+  addedAt         DateTime @default(now()) @map("added_at")
+
+  playlist Playlist @relation(fields: [playlistId], references: [id], onDelete: Cascade)
+
+  @@index([playlistId])
+  @@map("playlist_songs")
+}
+
+model LikedSong {
+  id              String   @id @default(cuid())
+  userId          String   @map("user_id")
+  trackTitle      String   @map("track_title")
+  trackArtist     String   @map("track_artist")
+  trackUrl        String   @map("track_url")
+  trackSource     String   @map("track_source")
+  durationSeconds Int      @default(0) @map("duration_seconds")
+  likedAt         DateTime @default(now()) @map("liked_at")
+
+  user User @relation(fields: [userId], references: [userId], onDelete: Cascade)
+
+  @@unique([userId, trackUrl])
+  @@index([userId])
+  @@map("liked_songs")
+}
+
+model DjCommand {
+  guildId     String  @map("guild_id")
+  commandName String  @map("command_name")
+  locked      Boolean @default(true)
+
+  guild Guild @relation(fields: [guildId], references: [guildId], onDelete: Cascade)
+
+  @@id([guildId, commandName])
+  @@map("dj_commands")
+}

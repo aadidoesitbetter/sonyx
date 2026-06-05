@@ -1,0 +1,37 @@
+{
+  "name": "sonyx",
+  "version": "1.0.0",
+  "description": "Sonyx — fully featured Discord music bot",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "db:generate": "prisma generate",
+    "db:push": "prisma db push",
+    "db:migrate": "prisma migrate dev",
+    "dashboard:dev": "cd dashboard && npm run dev",
+    "dashboard:build": "cd dashboard && npm run build"
+  },
+  "keywords": ["discord", "music", "bot", "lavalink", "sonyx"],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@discordjs/rest": "^2.4.0",
+    "@napi-rs/canvas": "^0.1.65",
+    "@prisma/client": "^6.3.0",
+    "discord.js": "^14.17.1",
+    "dotenv": "^16.4.7",
+    "pino": "^9.6.0",
+    "pino-pretty": "^13.0.0",
+    "shoukaku": "^4.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "prisma": "^6.3.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

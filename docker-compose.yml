@@ -1,0 +1,55 @@
+version: "3.8"
+
+services:
+  lavalink:
+    image: ghcr.io/lavalink-devs/lavalink:4
+    container_name: sonyx-lavalink
+    restart: unless-stopped
+    ports:
+      - "2333:2333"
+    volumes:
+      - ./application.yml:/opt/Lavalink/application.yml
+      - ./lavalink-plugins:/opt/Lavalink/plugins
+    environment:
+      - SPOTIFY_CLIENT_ID=${SPOTIFY_CLIENT_ID:-}
+      - SPOTIFY_CLIENT_SECRET=${SPOTIFY_CLIENT_SECRET:-}
+      - DEEZER_MASTER_KEY=${DEEZER_MASTER_KEY:-}
+    networks:
+      - sonyx-net
+
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sonyx-bot
+    restart: unless-stopped
+    depends_on:
+      - lavalink
+    env_file:
+      - .env
+    environment:
+      - LAVALINK_HOST=lavalink
+      - LAVALINK_PORT=2333
+    networks:
+      - sonyx-net
+
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: sonyx-dashboard
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      - NEXTAUTH_URL=${DASHBOARD_URL:-http://localhost:3000}
+    depends_on:
+      - bot
+    networks:
+      - sonyx-net
+
+networks:
+  sonyx-net:
+    driver: bridge
