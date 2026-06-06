@@ -333,7 +333,7 @@ function registerQueueCommands(): void {
 
         player.queue.push(track);
         if (!player.current) {
-          await player.startPlayback(channel);
+          await player.startPlayback(vc, channel);
         } else {
           await channel.send({ embeds: [successEmbed(`Added **${track.title}** to the queue.`)] });
         }

@@ -178,6 +178,9 @@ export class GuildPlayer {
     const tracks = await this.resolve(query, requester, opts?.forceSource);
     this.textChannelId = textChannel.id;
 
+    // Join the voice channel before doing anything else
+    await this.ensurePlayer(voiceChannel);
+
     if (opts?.front) {
       this.queue.unshift(...tracks);
     } else {
@@ -185,7 +188,7 @@ export class GuildPlayer {
     }
 
     if (!this.current) {
-      await this.startPlayback(textChannel);
+      await this.startPlayback(voiceChannel, textChannel);
     } else if (this.announce) {
       const track = opts?.front ? tracks[0] : tracks[tracks.length - 1];
       const pos = opts?.front ? 1 : this.queue.length;
@@ -197,15 +200,15 @@ export class GuildPlayer {
     return tracks;
   }
 
-  async startPlayback(textChannel: TextChannel): Promise<void> {
+  async startPlayback(voiceChannel: VoiceBasedChannel, textChannel: TextChannel): Promise<void> {
     if (this.queue.length === 0) return;
 
     const track = this.queue.shift()!;
     this.current = track;
     this.paused = false;
 
-    const player = this.shoukakuPlayer;
-    if (!player) return;
+    // Ensure we're connected (handles the case where the bot was disconnected between tracks)
+    const player = await this.ensurePlayer(voiceChannel);
 
     await player.playTrack({ track: { encoded: track.encoded! } });
     await player.setGlobalVolume(this.volume);
@@ -318,12 +321,14 @@ export class GuildPlayer {
     this.stopProgressUpdates();
 
     if (this.queue.length > 0) {
-      const channel = await this.getTextChannel();
-      if (channel) await this.startPlayback(channel);
+      const textChannel = await this.getTextChannel();
+      const voiceChannel = await this.getVoiceChannel();
+      if (textChannel && voiceChannel) await this.startPlayback(voiceChannel, textChannel);
     } else if (this.autoplay && this.history[0]) {
       await this.addSimilar(5);
-      const channel = await this.getTextChannel();
-      if (channel && this.queue.length > 0) await this.startPlayback(channel);
+      const textChannel = await this.getTextChannel();
+      const voiceChannel = await this.getVoiceChannel();
+      if (textChannel && voiceChannel && this.queue.length > 0) await this.startPlayback(voiceChannel, textChannel);
     } else {
       this.resetLeaveTimeout();
     }
@@ -335,6 +340,14 @@ export class GuildPlayer {
     const channel = await client.channels.fetch(this.textChannelId).catch(() => null);
     if (!channel?.isTextBased()) return null;
     return channel as TextChannel;
+  }
+
+  async getVoiceChannel(): Promise<VoiceBasedChannel | null> {
+    if (!this.voiceChannelId) return null;
+    const client = playerManager.client;
+    const channel = await client.channels.fetch(this.voiceChannelId).catch(() => null);
+    if (!channel?.isVoiceBased()) return null;
+    return channel as VoiceBasedChannel;
   }
 
   async skip(): Promise<void> {

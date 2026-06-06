@@ -152,7 +152,7 @@ function registerPlaylistCommands(): void {
           }
         }
 
-        if (!player.current) await player.startPlayback(channel);
+        if (!player.current) await player.startPlayback(vc, channel);
         await reply(ctx, successEmbed(`Loaded **${playlist.songs.length}** songs from **${name}**.`));
         return;
       }
@@ -329,7 +329,7 @@ function registerPlaylistCommands(): void {
       try {
         const tracks = await player.resolve(query, member.user, "spotify");
         player.queue.push(...tracks);
-        if (!player.current) await player.startPlayback(channel);
+        if (!player.current) await player.startPlayback(vc, channel);
         await reply(ctx, successEmbed(`Added **${tracks.length}** Spotify track(s).`));
       } catch (err) {
         await replyError(ctx, err instanceof Error ? err.message : "Failed to play Spotify track.");
