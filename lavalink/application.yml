@@ -32,7 +32,7 @@ lavalink:
     opusEncodingQuality: 10
     resamplingQuality: HIGH
     trackStuckThresholdMs: 10000
-    useSeekGhosting: true
+    useSeekGhosting: false
     playerUpdateInterval: 5
     soundcloudSearchEnabled: true
     gc-warnings: true

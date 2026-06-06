@@ -351,14 +351,22 @@ export class GuildPlayer {
   }
 
   async skip(): Promise<void> {
-    await this.shoukakuPlayer?.stopTrack();
+    try {
+      await this.shoukakuPlayer?.stopTrack();
+    } catch {
+      /* ignore if session not found */
+    }
   }
 
   async stop(): Promise<void> {
     this.queue = [];
     this.current = null;
     this.stopProgressUpdates();
-    await this.shoukakuPlayer?.stopTrack();
+    try {
+      await this.shoukakuPlayer?.stopTrack();
+    } catch {
+      /* ignore if session not found */
+    }
     if (this.nowPlayingMessage) {
       try {
         await this.nowPlayingMessage.edit({ components: [] });
@@ -370,7 +378,11 @@ export class GuildPlayer {
 
   async pause(): Promise<void> {
     if (!this.shoukakuPlayer) return;
-    await this.shoukakuPlayer.setPaused(true);
+    try {
+      await this.shoukakuPlayer.setPaused(true);
+    } catch {
+      /* ignore */
+    }
     this.paused = true;
     const channel = await this.getTextChannel();
     if (channel && this.current) await this.sendNowPlaying(channel);
@@ -378,7 +390,11 @@ export class GuildPlayer {
 
   async resume(): Promise<void> {
     if (!this.shoukakuPlayer) return;
-    await this.shoukakuPlayer.setPaused(false);
+    try {
+      await this.shoukakuPlayer.setPaused(false);
+    } catch {
+      /* ignore */
+    }
     this.paused = false;
     const channel = await this.getTextChannel();
     if (channel && this.current) await this.sendNowPlaying(channel);
@@ -386,13 +402,21 @@ export class GuildPlayer {
 
   async setVolume(vol: number): Promise<void> {
     this.volume = Math.max(0, Math.min(200, vol));
-    await this.shoukakuPlayer?.setGlobalVolume(this.volume);
+    try {
+      await this.shoukakuPlayer?.setGlobalVolume(this.volume);
+    } catch {
+      /* ignore */
+    }
   }
 
   async seek(seconds: number): Promise<void> {
     if (!this.current) return;
     const clamped = Math.max(0, Math.min(seconds, this.current.duration));
-    await this.shoukakuPlayer?.seekTo(clamped * 1000);
+    try {
+      await this.shoukakuPlayer?.seekTo(clamped * 1000);
+    } catch {
+      /* ignore */
+    }
   }
 
   cycleLoop(): LoopMode {
