@@ -41,10 +41,10 @@ plugins:
   youtube:
     enabled: true
     clients:
+      - ANDROID
+      - IOS
       - MUSIC
-      - ANDROID_TESTSUITE
       - WEB
-      - TVHTML5EMBEDDED
 
 metrics:
   prometheus:
