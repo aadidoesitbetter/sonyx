@@ -46,7 +46,8 @@ const shoukaku = new Shoukaku(
     moveOnDisconnect: true,
     resume: true,
     resumeTimeout: 60,
-    reconnectTries: 5,
+    reconnectTries: 20,
+    reconnectInterval: 15000,
     restTimeout: 60,
   }
 );
