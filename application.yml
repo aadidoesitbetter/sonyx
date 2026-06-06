@@ -4,6 +4,8 @@ server:
 
 lavalink:
   plugins:
+    - dependency: "dev.lavalink.youtube:youtube-plugin:1.11.4"
+      repository: "https://maven.lavalink.dev/releases"
     - dependency: "dev.arbjerg:lavasrc:4.1.1"
       repository: "https://maven.lavalink.dev/releases"
     - dependency: "com.github.topi314.lyrics:lavalyrics-plugin:1.0.0"
@@ -11,7 +13,7 @@ lavalink:
   server:
     password: "youshallnotpass"
     sources:
-      youtube: true
+      youtube: false 
       bandcamp: true
       soundcloud: true
       twitch: true
