@@ -50,7 +50,8 @@ plugins:
       - WEBEMBEDDED
     oauth:
       enabled: true
-      skipInitialization: false
+      refreshToken: "${YOUTUBE_REFRESH_TOKEN:}"
+      skipInitialization: true
 
 metrics:
   prometheus:
