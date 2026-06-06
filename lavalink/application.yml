@@ -3,61 +3,21 @@ server:
   address: 0.0.0.0
 
 lavalink:
-  plugins:
-    - dependency: "dev.lavalink.youtube:youtube-plugin:1.18.1"
-      repository: "https://maven.lavalink.dev/releases"
   server:
-    password: ${LAVALINK_SERVER_PASSWORD:youshallnotpass}
+    password: "rG7fuygh0976"
     sources:
-      youtube: false
+      youtube: true
       bandcamp: true
       soundcloud: true
       twitch: true
       vimeo: true
       http: true
       local: false
-    filters:
-      volume: true
-      equalizer: true
-      karaoke: true
-      timescale: true
-      tremolo: true
-      vibrato: true
-      rotation: true
-      distortion: true
-      channelMix: true
-      lowPass: true
-    bufferDurationMs: 400
-    frameBufferDurationMs: 5000
-    opusEncodingQuality: 10
-    resamplingQuality: HIGH
-    trackStuckThresholdMs: 10000
-    useSeekGhosting: true
-    playerUpdateInterval: 5
-    soundcloudSearchEnabled: true
-    gc-warnings: true
 
-plugins:
-  youtube:
-    enabled: true
-    clients:
-      - ANDROID
-      - IOS
-      - MUSIC
-      - WEB
-
-metrics:
-  prometheus:
-    enabled: false
-    endpoint: /metrics
-
-sentry:
-  dsn: ""
-  environment: ""
-
-logging:
-  file:
-    path: ./logs/
-  level:
-    root: INFO
-    lavalink: INFO
+  filters:
+    volume: true
+    equalizer: true
+    karaoke: true
+    timescale: true
+    tremolo: true
+    vibrato: true
