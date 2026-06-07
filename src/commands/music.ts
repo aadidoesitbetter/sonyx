@@ -42,6 +42,8 @@ async function handlePlay(
   query: string,
   opts?: { front?: boolean; skipCurrent?: boolean; forceSource?: string }
 ): Promise<void> {
+  await ctx.interaction?.deferReply();
+
   const vc = await checkVoice(ctx);
   if (!vc) return;
   if (!(await checkBotPermissions(ctx, vc))) return;
@@ -64,22 +66,19 @@ async function handlePlay(
       forceSource: opts?.forceSource,
     });
 
-    if (!player.current || player.current.title === tracks[0]?.title) {
-      const embed =
-        tracks.length === 1
-          ? nowPlayingEmbed(tracks[0], {
-              position: 1,
-              queueLength: player.queue.length + 1,
-              volume: player.volume,
-              loopMode: player.loopMode,
-            })
-          : successEmbed(`Added **${tracks.length}** tracks to the queue.`);
+    const embed =
+      tracks.length === 1
+        ? addedToQueueEmbed(tracks[0], player.queue.length === 0 ? 1 : player.queue.length)
+        : successEmbed(`Added **${tracks.length}** tracks to the queue.`);
 
-      if (ctx.interaction) {
-        await ctx.interaction.reply({ embeds: [embed] });
+    if (ctx.interaction) {
+      if (ctx.interaction.deferred || ctx.interaction.replied) {
+        await ctx.interaction.editReply({ embeds: [embed] });
       } else {
-        await ctx.message!.reply({ embeds: [embed] });
+        await ctx.interaction.reply({ embeds: [embed] });
       }
+    } else {
+      await ctx.message!.reply({ embeds: [embed] });
     }
   } catch (err) {
     await replyError(ctx, err instanceof Error ? err.message : "Failed to play track.");
